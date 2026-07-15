@@ -5,7 +5,7 @@ import { db } from "./db";
 
 import type { DatabaseUser } from "./db";
 
-const adapter = new LibSQLAdapter(db as any, {
+const adapter = new LibSQLAdapter(db, {
 	user: "user",
 	session: "session"
 });

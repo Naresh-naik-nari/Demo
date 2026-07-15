@@ -20,7 +20,6 @@
   let passwordStrength = 0;
   
   onMount(async () => {    
-    if ($loggedInStore) window.location.href = '/dashboard';
     await fetch('/api/auth/checkAdmin', {
       method: 'POST',
       headers: {

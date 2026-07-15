@@ -1,10 +1,7 @@
-import { redirect } from "@sveltejs/kit";
-
 import type { ServerLoad } from "@sveltejs/kit"
 
-export const load: ServerLoad = async (event) => {
-	if (event.locals.user) {
-		return redirect(302, "/dashboard");
-	}
+// Register page is always accessible — it's used for initial admin setup
+// and for navigating from the login page.
+export const load: ServerLoad = async () => {
 	return {};
 };

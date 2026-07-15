@@ -6,10 +6,7 @@ import { db } from "$lib/server/db";
 import type { Actions, ServerLoad } from "@sveltejs/kit"
 import type { DatabaseUser } from "$lib/server/db";
 
-export const load: ServerLoad = async (event) => {
-	if (event.locals.user) {
-		return redirect(302, "/dashboard");
-	}
+export const load: ServerLoad = async () => {
 	return {};
 };
 
@@ -35,9 +32,12 @@ export const actions: Actions = {
 			});
 		}
 
-		const existingUser = db.prepare("SELECT * FROM user WHERE username = ?").get(username) as
-			| DatabaseUser
-			| undefined;
+		const result = await db.execute({
+			sql: "SELECT * FROM user WHERE username = ?",
+			args: [username]
+		});
+		const existingUser = result.rows[0] as unknown as DatabaseUser | undefined;
+
 		if (!existingUser) {
 			return fail(400, {
 				message: "Incorrect username or password"
@@ -51,15 +51,6 @@ export const actions: Actions = {
 			parallelism: 1
 		});
 		if (!validPassword) {
-			// NOTE:
-		// Returning immediately allows malicious actors to figure out valid usernames from response times,
-		// allowing them to only focus on guessing passwords in brute-force attacks.
-		// As a preventive measure, you may want to hash passwords even for invalid usernames.
-		// However, valid usernames can be already be revealed with the signup page among other methods.
-		// It will also be much more resource intensive.
-		// Since protecting against this is non-trivial,
-		// it is crucial your implementation is protected against brute-force attacks with login throttling, 2FA, etc.
-		// If usernames are public, you can outright tell the user that the username is invalid.
 			return fail(400, {
 				message: "Incorrect username or password"
 			});

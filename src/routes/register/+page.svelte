@@ -6,7 +6,6 @@
       tertiaryColorStore
     } from '../../stores/customizationStore';
     import { onMount } from 'svelte';
-    import { loggedInStore } from '../../stores/authStore';
   
     $: darkMode = $darkModeStore;
     $: primaryColor = $primaryColorStore;
@@ -21,8 +20,6 @@
     let passwordStrength = 0;
     
     onMount(async () => {    
-        if ($loggedInStore) window.location.href = '/dashboard';
-    
         // Set up input focus handlers
         setTimeout(() => {
             const inputs = ['email', 'password', 'confirmPassword']
