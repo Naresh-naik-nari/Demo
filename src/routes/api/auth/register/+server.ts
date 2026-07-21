@@ -38,14 +38,14 @@ export const POST: RequestHandler = async (event): Promise<Response> => {
             sql: "INSERT INTO user (id, username, password_hash) VALUES(?, ?, ?)",
             args: [userId, username, passwordHash]
         });
-        const session = event.locals.session;
-        if (session) {
-            const sessionCookie = lucia.createSessionCookie(session.id);
-            event.cookies.set(sessionCookie.name, sessionCookie.value, {
-                path: ".",
-                ...sessionCookie.attributes
-            });
-        }
+
+        // Create a session for the newly registered user
+        const session = await lucia.createSession(userId, {});
+        const sessionCookie = lucia.createSessionCookie(session.id);
+        event.cookies.set(sessionCookie.name, sessionCookie.value, {
+            path: ".",
+            ...sessionCookie.attributes
+        });
     } catch (e: any) {
         // Check for unique constraint violation (SQLITE_CONSTRAINT_UNIQUE)
         if (e?.message?.includes("UNIQUE constraint failed")) {

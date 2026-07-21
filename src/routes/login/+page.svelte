@@ -6,7 +6,6 @@
     tertiaryColorStore
   } from '../../stores/customizationStore';
   import { onMount } from 'svelte';
-  import { loggedInStore } from '../../stores/authStore';
 
   $: darkMode = $darkModeStore;
   $: primaryColor = $primaryColorStore;
@@ -65,7 +64,6 @@
       },
     })
     if (response.status === 200) {
-      loggedInStore.set(true);
       document.cookie = 'lastActivity=' + Date.now();
       window.location.href = '/dashboard';
     } else {
@@ -113,8 +111,8 @@
     {/if}
     <form on:submit|preventDefault={handleSubmit}>
       <div class="mb-4">
-        <label for="email" class="block">Email</label>
-        <input type="email" id="email" bind:value={email} class="w-full px-3 py-2 rounded" required />
+        <label for="email" class="block">Username</label>
+        <input type="text" id="email" bind:value={email} class="w-full px-3 py-2 rounded" required autocomplete="username" />
       </div>
       <div class="mb-4">
         <label for="password" class="block">Password</label>
@@ -141,6 +139,7 @@
     color: var(--fontColor);
     margin-bottom: 0.3em;
   }
+  input[type="text"],
   input[type="email"],
   input[type="password"] {
     background-color: var(--tertiaryColor);

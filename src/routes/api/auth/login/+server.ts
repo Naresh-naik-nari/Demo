@@ -53,14 +53,12 @@ export const POST: RequestHandler = async (event): Promise<Response> => {
             });
         }
 
-        const session = event.locals.session;
-        if (session) {
-            const sessionCookie = lucia.createSessionCookie(session.id);
-            event.cookies.set(sessionCookie.name, sessionCookie.value, {
-                path: ".",
-                ...sessionCookie.attributes
-            });
-        }
+        const session = await lucia.createSession(existingUser.id, {});
+        const sessionCookie = lucia.createSessionCookie(session.id);
+        event.cookies.set(sessionCookie.name, sessionCookie.value, {
+            path: ".",
+            ...sessionCookie.attributes
+        });
     } catch (e: any) {
         return new Response(JSON.stringify({ message: e.message }), {
             status: 500,

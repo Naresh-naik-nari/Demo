@@ -22,6 +22,8 @@
     mavBatteryStore,
     mavArmedStateStore,
     mavSatelliteStore,
+    mavGimbalTiltStore,
+    mavGimbalPanStore,
     type Parameter,
     type ParameterMeta
   } from '../stores/mavlinkStore';
@@ -457,6 +459,14 @@
           params[paramId] = param;
           mavlinkParamStore.set(params);
       }
+    },
+
+    // Gimbal / camera telemetry from MOUNT_STATUS (MSG_ID 158)
+    MOUNT_STATUS: (text: string) => {
+      const tilt = extractValue(text, 'pointingA'); // centidegrees
+      const pan  = extractValue(text, 'pointingB'); // centidegrees
+      if (tilt !== null) mavGimbalTiltStore.set(parseFloat(tilt) / 100);
+      if (pan  !== null) mavGimbalPanStore.set(parseFloat(pan)  / 100);
     }
   };
 

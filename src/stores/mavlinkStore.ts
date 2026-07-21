@@ -33,3 +33,8 @@ export const mavSpeedStore = writable<number>(0);
 export const mavBatteryStore = writable<number|null>(null);
 export const mavlinkLogStore = writable<string[]>([]);
 export const mavlinkParamStore = writable<{[key: string]: Parameter}>({});
+
+// Gimbal / camera telemetry stores
+export const mavGimbalTiltStore  = writable<number>(0);   // degrees, -90 (down) to 0 (forward)
+export const mavGimbalPanStore   = writable<number>(0);   // degrees, -180 to 180
+export const mavGimbalZoomStore  = writable<number>(1.0); // zoom multiplier 1x–10x

@@ -35,6 +35,22 @@
   let currentTileLayer = get(mapTileLayerStore);
   let zoom = get(mapZoomStore);
 
+  // Cursor grid reference display
+  let cursorLat: number | null = null;
+  let cursorLng: number | null = null;
+
+  function toGridRef(lat: number, lng: number): string {
+    const latDir = lat >= 0 ? 'N' : 'S';
+    const lngDir = lng >= 0 ? 'E' : 'W';
+    const latAbs = Math.abs(lat);
+    const lngAbs = Math.abs(lng);
+    const latDeg = Math.floor(latAbs);
+    const lngDeg = Math.floor(lngAbs);
+    const latMin = ((latAbs - latDeg) * 60).toFixed(4);
+    const lngMin = ((lngAbs - lngDeg) * 60).toFixed(4);
+    return `${latDeg}°${latMin}'${latDir}  ${lngDeg}°${lngMin}'${lngDir}`;
+  }
+
   let actions: MissionPlanActions = {};
   let action_types = [
     'NAV_WAYPOINT', 'NAV_SPLINE_WAYPOINT', 'NAV_TAKEOFF', 'NAV_RETURN_TO_LAUNCH', 'NAV_GUIDED_ENABLE', 'NAV_LAND',
@@ -170,10 +186,18 @@
 
     const locationDisplay = document.querySelector('#location-display')!;
     function updateLocationDisplay() {
-      locationDisplay.textContent = `MAV Location: ${mavLocation.lat.toFixed(6)}°, ${mavLocation.lng.toFixed(6)}°, Yaw: ${mavHeading}°, Alt: ${get(mavAltitudeStore)}m`;
+      const gridRef = toGridRef(mavLocation.lat, mavLocation.lng);
+      locationDisplay.innerHTML = `<span title="MAV coordinates">📍 ${gridRef}</span> &nbsp;|&nbsp; Yaw: ${mavHeading}° &nbsp;|&nbsp; Alt: ${get(mavAltitudeStore).toFixed(1)}m`;
     }
     updateLocationDisplay();
     mavLocationStore.subscribe(location => { mavLocation = location; updateLocationDisplay(); });
+
+    // Update cursor grid reference on mouse move
+    leafletMap.on('mousemove', (e: L.LeafletMouseEvent) => {
+      cursorLat = e.latlng.lat;
+      cursorLng = e.latlng.lng;
+    });
+    leafletMap.on('mouseout', () => { cursorLat = null; cursorLng = null; });
 
     leafletMap.on('click', (e: L.LeafletMouseEvent) => {
       if (Object.keys(actions).length > 1) {
@@ -445,6 +469,24 @@
     border-radius: 4px;
     z-index: 1000;
   }
+
+  .cursor-grid-ref {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    background: rgba(0,0,0,0.6);
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    border-radius: 6px;
+    z-index: 1000;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    backdrop-filter: blur(2px);
+  }
 </style>
 
 <div class="map-container" style="--primaryColor: {primaryColor}; --secondaryColor: {secondaryColor}; --tertiaryColor: {tertiaryColor}; --fontColor: {fontColor};">
@@ -466,4 +508,11 @@
     </div>
   </label>
   <div id="location-display" class="text-black text-sm" style={!hideOverlay ? 'display: block;' : 'display: none;'}></div>
+  <!-- Cursor grid reference -->
+  {#if !hideOverlay && cursorLat !== null && cursorLng !== null}
+    <div class="cursor-grid-ref" style="--primaryColor: {primaryColor}; --fontColor: {fontColor};">
+      <i class="fas fa-crosshairs" style="opacity:0.7;"></i>
+      {toGridRef(cursorLat, cursorLng)}
+    </div>
+  {/if}
 </div>
