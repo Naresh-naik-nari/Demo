@@ -140,7 +140,6 @@
     margin-bottom: 0.3em;
   }
   input[type="text"],
-  input[type="email"],
   input[type="password"] {
     background-color: var(--tertiaryColor);
     border: 2px solid var(--secondaryColor);

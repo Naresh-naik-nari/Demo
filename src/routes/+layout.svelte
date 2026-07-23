@@ -43,7 +43,6 @@
   } from '../stores/customizationStore';
   import { loggedInStore } from '../stores/authStore';
   import { get, writable } from 'svelte/store';
-  import Offline from '../components/Offline.svelte';
   import Notification from '../components/Notification.svelte';
   import SerialPortModal from '../components/SerialPortModal.svelte';
   import { mapTypeStore } from '../stores/mapStore';
@@ -768,11 +767,7 @@
       <slot />
     </div>
 
-    {#key online}
-      {#if !online && currentPath !== '/login' && currentPath !== '/' && currentPath !== '/register'}
-        <Offline />
-      {/if}
-    {/key}
+    
   </div>
 </main>
 

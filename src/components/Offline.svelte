@@ -48,8 +48,8 @@
               {/if}
             </button>
             <div class="p-4 pl-0 text-lg text-center font-semibold">
-                <i class="fas fa-circle-notch fa-spin mr-1"></i>
-                Reconnecting...
+                <i class="fas fa-wifi-slash mr-1"></i>
+                No Internet Connection
             </div>
         </div>
         {#if !isMinimized}

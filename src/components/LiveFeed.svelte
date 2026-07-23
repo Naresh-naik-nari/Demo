@@ -17,6 +17,13 @@
     mavGimbalZoomStore
   } from '../stores/mavlinkStore';
 
+  // Video feed URL built from .env variables (VITE_ prefix = exposed to client)
+  const VIDEO_PORT = import.meta.env.VITE_VIDEO_PORT ?? '8889';
+  const VIDEO_PATH = import.meta.env.VITE_VIDEO_PATH ?? 'cam';
+  $: feedUrl = typeof window !== 'undefined'
+    ? `http://${window.location.hostname}:${VIDEO_PORT}/${VIDEO_PATH}`
+    : '';
+
   $: darkMode       = $darkModeStore;
   $: primaryColor   = $primaryColorStore;
   $: secondaryColor = $secondaryColorStore;
@@ -50,8 +57,8 @@
   }
 
   // ── Recording ────────────────────────────────────────────────────────────────
-  // The stream is cross-origin (MediaMTX on port 8889), so we can't use
-  // captureStream() on the iframe. Instead, we use the Screen Capture API
+  // The stream is cross-origin (MediaMTX, port configured via VITE_VIDEO_PORT in .env),
+  // so captureStream() on the iframe is blocked by the browser's same-origin policy.
   // which lets the user pick the browser tab/window to record.
   let isRecording   = false;
   let mediaRecorder: MediaRecorder | null = null;
@@ -241,7 +248,7 @@
       allowfullscreen
       id="live-feed"
       title="Live Feed"
-      src={typeof window !== 'undefined' ? `http://${window.location.hostname}:8889/cam` : ''}
+      src={feedUrl}
       class="feed-el"
       style="z-index:20; pointer-events:none;"
     ></iframe>

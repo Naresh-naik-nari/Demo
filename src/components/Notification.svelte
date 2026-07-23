@@ -20,7 +20,11 @@
     const updateTranslateY = () => {
         const notifications = Array.from(document.querySelectorAll('.notification'));
         notificationCountStore.set(notifications.length);
-        const notificationHeight = notifications[notifications.length - 1].clientHeight + 8;
+
+        if (notifications.length === 0) return;
+
+        const lastNotif = notifications[notifications.length - 1] as HTMLElement;
+        const notificationHeight = lastNotif.clientHeight + 8;
 
         notifications.forEach((notif, index) => {
             // @ts-ignore
