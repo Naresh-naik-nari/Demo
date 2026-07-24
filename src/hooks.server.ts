@@ -12,6 +12,11 @@ declare global {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	// Silence Chrome DevTools probe — return empty JSON instead of 404
+	if (event.url.pathname === '/.well-known/appspecific/com.chrome.devtools.json') {
+		return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+	}
+
 	// Redirect root to login
 	if (event.url.pathname === '/') {
 		throw redirect(302, '/login');

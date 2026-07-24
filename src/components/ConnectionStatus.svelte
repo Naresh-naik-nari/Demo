@@ -20,6 +20,31 @@
         : battery <= 20  ? '#ef4444'
         : battery <= 50  ? '#f59e0b'
         : '#10b981';
+
+    let armConfirm = false; // show confirm step before arming
+
+    async function toggleArmed() {
+        if (!isArmed) {
+            // Arm — require a second click to confirm
+            if (!armConfirm) {
+                armConfirm = true;
+                setTimeout(() => { armConfirm = false; }, 3000); // reset after 3s
+                return;
+            }
+        }
+        armConfirm = false;
+        const param = isArmed ? 0 : 1; // 0 = disarm, 1 = arm
+        await fetch('/api/mavlink/send_command', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'command': 'COMPONENT_ARM_DISARM',
+                'params': `${param},0`,
+                'useCmdLong': 'true',
+                'useArduPilotMega': 'false'
+            }
+        });
+    }
 </script>
 
 <div
@@ -40,10 +65,25 @@
     {#if isOnline}
         <div class="divider"></div>
 
-        <!-- Armed state -->
-        <div class="pill {isArmed ? 'pill-red' : 'pill-gray'}">
-            <i class="fas {isArmed ? 'fa-lock-open' : 'fa-lock'}"></i>
-            <span>{isArmed ? 'ARMED' : 'DISARMED'}</span>
+        <!-- Armed state + toggle button -->
+        <div class="armed-group">
+            <div class="pill {isArmed ? 'pill-red' : 'pill-gray'}">
+                <i class="fas {isArmed ? 'fa-lock-open' : 'fa-lock'}"></i>
+                <span>{isArmed ? 'ARMED' : 'DISARMED'}</span>
+            </div>
+            <button
+                class="arm-btn {isArmed ? 'arm-btn-disarm' : armConfirm ? 'arm-btn-confirm' : 'arm-btn-arm'}"
+                on:click={toggleArmed}
+                title={isArmed ? 'Click to Disarm' : armConfirm ? 'Click again to confirm ARM' : 'Click to Arm'}
+            >
+                {#if isArmed}
+                    <i class="fas fa-lock"></i> Disarm
+                {:else if armConfirm}
+                    <i class="fas fa-exclamation-triangle"></i> Confirm?
+                {:else}
+                    <i class="fas fa-lock-open"></i> Arm
+                {/if}
+            </button>
         </div>
 
         <div class="divider"></div>
@@ -193,6 +233,58 @@
         font-size: 0.78rem;
         opacity: 0.5;
         font-style: italic;
+    }
+
+    /* armed group — pill + button side by side */
+    .armed-group {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        flex-shrink: 0;
+    }
+
+    .arm-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.2rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        border: none;
+        cursor: pointer;
+        transition: all 0.15s;
+        white-space: nowrap;
+    }
+
+    .arm-btn-arm {
+        background-color: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .arm-btn-arm:hover {
+        background-color: rgba(239, 68, 68, 0.3);
+    }
+
+    .arm-btn-confirm {
+        background-color: rgba(245, 158, 11, 0.2);
+        color: #f59e0b;
+        border: 1px solid rgba(245, 158, 11, 0.5);
+        animation: pulse 0.6s ease-in-out infinite alternate;
+    }
+
+    .arm-btn-disarm {
+        background-color: rgba(107, 114, 128, 0.15);
+        color: #9ca3af;
+        border: 1px solid rgba(107, 114, 128, 0.3);
+    }
+    .arm-btn-disarm:hover {
+        background-color: rgba(107, 114, 128, 0.3);
+    }
+
+    @keyframes pulse {
+        from { opacity: 0.7; }
+        to   { opacity: 1;   }
     }
 
     @media (max-width: 990px) {

@@ -13,27 +13,36 @@ import { REGISTRY } from '$lib/server/mavlink-registry';
 // Persists across Vite HMR reloads since globalThis survives module re-execution.
 declare const globalThis: any;
 
-// HMR cleanup: destroy orphaned port so Windows releases the COM handle
+// HMR cleanup: properly close and release the COM handle on Vite hot reload
 if (globalThis.__mav?.port) {
     console.log('♻️ HMR reload — releasing orphaned port...');
-    try { globalThis.__mav.port.removeAllListeners(); } catch { /* ignore */ }
-    try { (globalThis.__mav.port as any).destroy(); } catch { /* ignore */ }
-    globalThis.__mav.port = null;
-    globalThis.__mav.reader = null;
-    globalThis.__mav.online = false;
+    const _p = globalThis.__mav.port;
+    try { _p.removeAllListeners(); } catch { /* ignore */ }
+    try { globalThis.__mav.reader?.removeAllListeners(); } catch { /* ignore */ }
+    globalThis.__mav.port      = null;
+    globalThis.__mav.reader    = null;
+    globalThis.__mav.online    = false;
     globalThis.__mav.connecting = false;
-    globalThis.__mav.promise = null;
+    globalThis.__mav.accessDenied = false;
+    globalThis.__mav.promise   = null;
+    // Use close() so Windows releases the handle before the module re-runs
+    try {
+        _p.close(() => { try { _p.destroy(); } catch { /* ignore */ } });
+    } catch {
+        try { _p.destroy(); } catch { /* ignore */ }
+    }
 }
 
 if (!globalThis.__mav) {
     globalThis.__mav = {
-        port:       null as SerialPort | Socket | null,
-        reader:     null as MavLinkPacketParser | null,
-        online:     false,
-        connecting: false,
-        logs:       [] as string[],
-        newLogs:    [] as string[],
-        promise:    null as Promise<void> | null,
+        port:         null as SerialPort | Socket | null,
+        reader:       null as MavLinkPacketParser | null,
+        online:       false,
+        connecting:   false,
+        accessDenied: false,  // set true when OS rejects port — stops auto-retry
+        logs:         [] as string[],
+        newLogs:      [] as string[],
+        promise:      null as Promise<void> | null,
     };
 }
 const S = globalThis.__mav;
@@ -92,7 +101,10 @@ async function forceConnect(portOverride?: string): Promise<void> {
         console.log('✅ Already connected');
         return;
     }
-    if (portOverride) process.env.USB_SERIAL_PORT = portOverride;
+    if (portOverride) {
+        process.env.USB_SERIAL_PORT = portOverride;
+        S.accessDenied = false;
+    }
 
     S.promise = _openPort().finally(() => { S.promise = null; });
     return S.promise;
@@ -145,7 +157,6 @@ async function _openPort(): Promise<void> {
                 else resolve();
             });
         });
-
         console.log(`✅ ${portPath} opened — waiting for MAVLink data...`);
 
         // Wait up to 10s for first byte
@@ -168,7 +179,13 @@ async function _openPort(): Promise<void> {
         S.port = null;
         S.reader = null;
         S.online = false;
-        console.error(`❌ Failed to initialize port:`, err);
+        // If access was denied, stop auto-retrying — user must close the other program first
+        if ((err as Error).message?.toLowerCase().includes('access denied')) {
+            S.accessDenied = true;
+            console.error(`❌ Access denied on ${portPath} — another program (Mission Planner, ArduPilot, etc.) is using this port. Close it, then reconnect manually.`);
+        } else {
+            console.error(`❌ Failed to initialize port:`, err);
+        }
         throw err;
     }
 
@@ -176,18 +193,36 @@ async function _openPort(): Promise<void> {
 }
 
 async function _closePort(): Promise<void> {
+    // Always reset state flags regardless of whether port is open
+    S.accessDenied = false;
+    S.connecting = false;
+
     const p = S.port;
+    S.port = null;
     if (!p) return;
     console.log('🔌 Closing connection...');
     p.removeAllListeners();
     S.reader?.removeAllListeners();
     S.reader = null;
     S.online = false;
+
+    // Use close() first — it flushes and properly releases the Windows COM handle.
+    // destroy() alone does not reliably release the handle on Windows.
     await new Promise<void>((resolve) => {
-        try { (p as any).destroy(); } catch { /* ignore */ }
-        setTimeout(resolve, 800); // Give Windows time to release the COM handle
+        try {
+            (p as SerialPort).close((err) => {
+                if (err) console.warn('⚠️ Close warning:', err.message);
+                try { (p as any).destroy(); } catch { /* ignore */ }
+                resolve();
+            });
+        } catch {
+            try { (p as any).destroy(); } catch { /* ignore */ }
+            resolve();
+        }
     });
-    S.port = null;
+
+    // Extra buffer for Windows to release the handle before any reconnect attempt
+    await new Promise(r => setTimeout(r, 1500));
     console.log('✅ Connection closed');
 }
 

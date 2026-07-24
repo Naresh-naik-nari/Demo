@@ -65,6 +65,7 @@
         const res = await fetch('/api/mavlink/disconnect', { method: 'POST' });
         const data = await res.json();
         serialConnected = false;
+        window.location.reload();
       } catch (e) {
         console.warn('Disconnect failed:', e);
       } finally {
