@@ -591,7 +591,13 @@
     if (loggedIn) document.cookie = 'lastActivity=' + Date.now();
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    // Disconnect the serial port before logging out
+    if (serialConnected) {
+      try {
+        await fetch('/api/mavlink/disconnect', { method: 'POST' });
+      } catch { /* ignore */ }
+    }
     loggedInStore.set(false);
     document.cookie = 'lastActivity=' + Date.UTC(1970);
     if (!window.location.pathname.includes('register')) goto('/login');
