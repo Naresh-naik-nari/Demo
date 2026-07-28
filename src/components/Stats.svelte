@@ -343,7 +343,7 @@
           await writeParameter('RTL_CLIMB_MIN', 0, get(mavlinkParamStore).RTL_CLIMB_MIN.param_type);
           if (get(mavStateStore) === 'STANDBY') {
             await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 0]}`, 'true'); // param2: 21196 bypasses pre-arm checks
+            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 bypasses pre-arm checks (RC, GPS, etc.)
             await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, 'true');
             await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
           }
@@ -401,7 +401,7 @@
         ],
         onConfirm: async () => {
           if (mavMode !== 'GUIDED') await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // param2: 4 (GUIDED) see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-          await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 0]}`, 'true'); // param2: 21196 bypasses pre-arm checks
+          await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 bypasses pre-arm checks (RC, GPS, etc.)
           await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, parseInt(modal.inputValues![0])]}`, 'true');
         },
       }

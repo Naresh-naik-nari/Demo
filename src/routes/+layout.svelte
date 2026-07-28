@@ -423,14 +423,23 @@
 
     STATUSTEXT: (text: string) => {
       const severity = extractValue(text, 'severity');
-      const statusText = text.match(/"text":"(.+?)"/)?.[0]
-        ?.replace('"text":"', '')
-        ?.replace('"', '');
+
+      // Extract the text field — handles messages with spaces, colons, special chars
+      const textMatch = text.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      const statusText = textMatch?.[1]?.replace(/\\n/g, ' ').trim();
 
       if (!severity || !statusText) return;
 
+      // Suppress RC-related warnings — RC is optional when arming manually via GCS
+      const rcMessages = [
+        'rc not found', 'rc failsafe', 'no rc receiver',
+        'rc not calibrated', 'rc 3 is not neutral', 'rc dead zone',
+        'prearm: rc', 'pre-arm: rc', 'radio failsafe'
+      ];
+      if (rcMessages.some(msg => statusText.toLowerCase().includes(msg))) return;
+
       const severityLevel = parseInt(severity);
-      const type: NotificationConfig['type'] = 
+      const type: NotificationConfig['type'] =
         severityLevel <= 3 ? 'error' :
         severityLevel === 4 ? 'warning' : 'info';
 

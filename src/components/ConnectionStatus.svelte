@@ -34,12 +34,15 @@
         }
         armConfirm = false;
         const param = isArmed ? 0 : 1; // 0 = disarm, 1 = arm
+        // param2 = 21196 bypasses ALL pre-arm checks (RC not connected, GPS, etc.)
+        // This allows manual arming from GCS without an RC transmitter
+        const forceParam = isArmed ? 21196 : 21196;
         await fetch('/api/mavlink/send_command', {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
                 'command': 'COMPONENT_ARM_DISARM',
-                'params': `${param},0`,
+                'params': `${param},${forceParam}`,
                 'useCmdLong': 'true',
                 'useArduPilotMega': 'false'
             }
@@ -84,53 +87,6 @@
                     <i class="fas fa-lock-open"></i> Arm
                 {/if}
             </button>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Flight mode -->
-        <div class="stat-item">
-            <i class="fas fa-sliders-h icon-dim"></i>
-            <span class="label">Mode</span>
-            <span class="value value-orange">{mavMode}</span>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- System state -->
-        <div class="stat-item">
-            <i class="fas fa-microchip icon-dim"></i>
-            <span class="label">State</span>
-            <span class="value">{systemState}</span>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Speed -->
-        <div class="stat-item">
-            <i class="fas fa-gauge-high icon-dim"></i>
-            <span class="label">Speed</span>
-            <span class="value">{speed} <span class="unit">m/s</span></span>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Altitude -->
-        <div class="stat-item">
-            <i class="fas fa-arrow-up-from-ground icon-dim"></i>
-            <span class="label">Alt</span>
-            <span class="value">{altitude} <span class="unit">m</span></span>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Battery -->
-        <div class="stat-item">
-            <i class="fas fa-battery-half icon-dim" style="color: {batteryColor}"></i>
-            <span class="label">Battery</span>
-            <span class="value" style="color: {batteryColor}">
-                {battery !== null ? battery + '%' : '--'}
-            </span>
         </div>
     {:else}
         <div class="divider"></div>
