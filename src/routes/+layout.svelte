@@ -24,6 +24,7 @@
     mavSatelliteStore,
     mavGimbalTiltStore,
     mavGimbalPanStore,
+    mavPendingArmStore,
     type Parameter,
     type ParameterMeta
   } from '../stores/mavlinkStore';
@@ -348,22 +349,79 @@
     },
 
     HEARTBEAT: (text: string) => {
-      let toProperCase = (str: string): string => {
-        return str.replace(/\w\S*/g, function(txt) {
-          return txt.charAt(0).toUpperCase() + txt.substring(1).toLowerCase();
-        });
+      // Only process heartbeats from the flight controller (sysid=1, compid=1)
+      // Other components (GPS, gimbal, camera, OSD) also send heartbeats
+      // and would overwrite the FC values with garbage
+      const sysIdMatch  = text.match(/sysid=(\d+)/);
+      const compIdMatch = text.match(/compid=(\d+)/);
+      if (sysIdMatch && compIdMatch) {
+        if (parseInt(sysIdMatch[1]) !== 1 || parseInt(compIdMatch[1]) !== 1) return;
       }
+      // Valid autopilot models for real flight controllers
+      const validAutopilots = new Set([
+        'ARDUPILOTMEGA', 'PX4', 'OPENPILOT', 'GENERIC',
+        'SLUGS', 'PPZ', 'UDB', 'FP', 'SMACCMPILOT',
+        'AUTOQUAD', 'SMARTAP', 'AIRRAILS', 'REFLEX'
+      ]);
+
+      // Valid vehicle types (exclude non-vehicle components)
+      const validTypes = new Set([
+        'FIXED_WING', 'QUADROTOR', 'COAXIAL', 'HELICOPTER',
+        'HEXAROTOR', 'OCTOROTOR', 'TRICOPTER', 'GROUND_ROVER',
+        'SURFACE_BOAT', 'SUBMARINE', 'AIRSHIP', 'FREE_BALLOON',
+        'ROCKET', 'VTOL_TAILSITTER_DUOROTOR', 'VTOL_TAILSITTER_QUADROTOR',
+        'VTOL_TILTROTOR', 'VTOL_FIXEDROTOR', 'VTOL_TAILSITTER',
+        'VTOL_TILTWING', 'DODECAROTOR', 'DECAROTOR', 'GENERIC_MULTIROTOR',
+        'GENERIC'
+      ]);
+
+      let toProperCase = (str: string): string =>
+        str.replace(/\w\S*/g, txt =>
+          txt.charAt(0).toUpperCase() + txt.substring(1).toLowerCase()
+        );
+
+      // MAV type — only set once from a valid vehicle type
       const type = extractValue(text, 'type');
-      if (type) mavTypeStore.set(toProperCase(MavType[parseInt(type)]));
+      if (type) {
+        const typeName = MavType[parseInt(type)];
+        if (typeName && validTypes.has(typeName)) {
+          const current = get(mavTypeStore);
+          if (current === 'Unknown') {
+            mavTypeStore.set(toProperCase(typeName));
+          }
+        }
+      }
 
+      // Autopilot model — only set once, skip INVALID/GENERIC unless nothing better set
       const model = extractValue(text, 'autopilot');
-      if (model) mavModelStore.set(MavAutopilot[parseInt(model)]);
+      if (model) {
+        const modelName = MavAutopilot[parseInt(model)];
+        if (modelName && modelName !== 'INVALID' && validAutopilots.has(modelName)) {
+          const current = get(mavModelStore);
+          if (current === 'UNKNOWN' || current === 'GENERIC') {
+            mavModelStore.set(modelName);
+          }
+        }
+      }
 
+      // System state — only update to stable states, never go backwards to boot states
       const state = extractValue(text, 'systemStatus');
-      if (state) mavStateStore.set(MavState[parseInt(state)]);
+      if (state) {
+        const stateNum = parseInt(state);
+        const stateName = MavState[stateNum];
+        // Only accept stable operational states
+        const stableStates = new Set(['STANDBY', 'ACTIVE', 'CRITICAL', 'EMERGENCY', 'POWEROFF', 'FLIGHT_TERMINATION']);
+        if (stateName && stableStates.has(stateName)) {
+          mavStateStore.set(stateName);
+        }
+      }
 
       const baseMode = extractValue(text, 'baseMode');
-      if (baseMode) mavArmedStateStore.set(parseInt(baseMode) === 209);
+      // Bit 7 (128) of baseMode is the armed flag per MAVLink spec
+      // Only update if no arm/disarm command is pending (avoids race with COMMAND_ACK)
+      if (baseMode && get(mavPendingArmStore) === null) {
+        mavArmedStateStore.set((parseInt(baseMode) & 128) !== 0);
+      }
 
       const customMode = extractValue(text, 'customMode');
       if (customMode) mavModeStore.set(CopterMode[parseInt(customMode)]);
@@ -407,16 +465,32 @@
       
       if (commandName === 'REQUEST_MESSAGE') return;
 
+      const isArmCmd = commandName === 'COMPONENT_ARM_DISARM';
+      const isArming = text.includes('"_param1":1') || text.includes('"param1":1');
+
       let type: NotificationConfig['type'] = 'success';
+      let content = `Command: ${commandName}<br>Result: ${resultName}`;
+
       if (resultName !== 'ACCEPTED') {
-        type = resultName.includes('FAILED') || 
-              resultName.includes('DENIED') || 
-              resultName.includes('UNSUPPORTED') ? 'error' : 'warning';
+        type = resultName.includes('FAILED') ||
+               resultName.includes('DENIED') ||
+               resultName.includes('UNSUPPORTED') ? 'error' : 'warning';
+        if (isArmCmd) {
+          // Failed — clear pending so heartbeat takes over the real state
+          mavPendingArmStore.set(null);
+          content = `${isArming ? 'Arming' : 'Disarming'} failed: ${resultName}`;
+        }
+      } else if (isArmCmd) {
+        // Accepted — lock in the confirmed state and clear pending
+        mavArmedStateStore.set(isArming);
+        mavPendingArmStore.set(null);
+        content = isArming ? '✅ Vehicle Armed' : '✅ Vehicle Disarmed';
+        type = isArming ? 'warning' : 'success';
       }
 
       showNotification({
-        title: 'Command Acknowledged',
-        content: `Command: ${commandName}<br>Result: ${resultName}`,
+        title: isArmCmd ? (isArming ? 'Arm Command' : 'Disarm Command') : 'Command Acknowledged',
+        content,
         type
       });
     },
@@ -513,7 +587,9 @@
 
   onMount(async () => {
     // @ts-ignore
-    document.querySelector('.bg')!.style.background = "url('bg-map.webp') no-repeat center center fixed";
+    document.querySelector('.bg')!.style.background = "#0a0a0f";
+    // Set initial body class based on default dark mode
+    document.body.classList.toggle('dark-mode', darkMode);
 
     // Sync serial connection status on load
     syncSerialStatus();
@@ -626,6 +702,8 @@
     let map = document.getElementById('map');
     darkMode = !darkMode;
     darkModeStore.set(darkMode);
+    // Toggle body class for global CSS light/dark mode selectors
+    document.body.classList.toggle('dark-mode', darkMode);
     if (map && get(mapTypeStore) !== 'Satellite') {
       map.classList.add('dark');
     } else {
@@ -646,9 +724,9 @@
       }
       // @ts-ignore
       document.querySelector('.bg')!.style.background = "url('bg-map-light.webp') no-repeat center center fixed";
-      primaryColorStore.set('#ffffff');
-      secondaryColorStore.set('#e7e9ef');
-      tertiaryColorStore.set('#d7d7d7');
+      primaryColorStore.set('#f0f4f8');
+      secondaryColorStore.set('#dce4ef');
+      tertiaryColorStore.set('#b8c8dc');
     }
   }
 

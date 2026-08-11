@@ -38,3 +38,7 @@ export const mavlinkParamStore = writable<{[key: string]: Parameter}>({});
 export const mavGimbalTiltStore  = writable<number>(0);   // degrees, -90 (down) to 0 (forward)
 export const mavGimbalPanStore   = writable<number>(0);   // degrees, -180 to 180
 export const mavGimbalZoomStore  = writable<number>(1.0); // zoom multiplier 1x–10x
+
+// Pending arm state — set when a command is sent, cleared by COMMAND_ACK
+// While set, heartbeat updates to mavArmedStateStore are blocked
+export const mavPendingArmStore  = writable<boolean | null>(null); // null = no pending command

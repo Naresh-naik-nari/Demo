@@ -5,10 +5,10 @@
 
 a {
   text-decoration: none !important;
-  color: #3182ce;
+  color: #2563eb;
 }
 a:hover {
-  color: #8abcf8;
+  color: #1d4ed8;
 }
 
 main {
@@ -41,7 +41,6 @@ main {
 ::-webkit-scrollbar-thumb {
   background: var(--sb-thumb-color);
   border-radius: 10px;
-  
 }
 
 @supports not selector(::-webkit-scrollbar) {
@@ -59,6 +58,7 @@ iframe {
   border-radius: 1rem;
 }
 
+/* ── Map dark mode filter ── */
 .dark .leaflet-layer,
 .dark .leaflet-control-zoom-in,
 .dark .leaflet-control-zoom-out {
@@ -79,12 +79,12 @@ iframe {
   gap: 5px;
 }
 .leaflet-control-attribution a:hover {
-  color: #3182ce;
+  color: #2563eb;
 }
 
 .tooltip {
   color: #fff;
-  background-color: #3290e7;
+  background-color: #2563eb;
 }
 
 .dashboard {
@@ -97,6 +97,140 @@ iframe {
   box-shadow: -5px 0 20px rgba(0, 0, 0, 0.2);
 }
 
+/* ── Light mode overrides ── */
+body:not(.dark-mode) {
+  color: #1e293b;
+}
+
+/* Light mode — dashboard panels get card-style shadow + border */
+body:not(.dark-mode) .dashboard {
+  box-shadow:
+    0 1px 3px rgba(0,0,0,0.08),
+    0 4px 16px rgba(0,0,0,0.06) !important;
+  border: 1px solid rgba(148,163,184,0.25);
+}
+
+/* Light mode — stronger text contrast */
+body:not(.dark-mode) .stats,
+body:not(.dark-mode) .status-bar {
+  color: #1e293b !important;
+}
+
+/* Light mode — panel labels dimmer */
+body:not(.dark-mode) .label,
+body:not(.dark-mode) .icon-dim {
+  color: #64748b !important;
+}
+
+/* Light mode — values bolder */
+body:not(.dark-mode) .value {
+  color: #0f172a !important;
+  font-weight: 700;
+}
+
+/* Light mode — dividers cleaner */
+body:not(.dark-mode) .divider {
+  background-color: #cbd5e1 !important;
+  opacity: 1 !important;
+}
+
+/* Light mode — nav sidebar */
+body:not(.dark-mode) .desktop-nav,
+body:not(.dark-mode) .mobile-nav {
+  background: linear-gradient(180deg, #1e3a5f 0%, #1e293b 100%) !important;
+  box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+}
+
+/* Light mode — nav buttons on dark sidebar stay white */
+body:not(.dark-mode) .nav-button,
+body:not(.dark-mode) .nav-icon {
+  color: #e2e8f0 !important;
+}
+body:not(.dark-mode) .nav-button:hover {
+  background-color: rgba(255,255,255,0.12) !important;
+  color: #fff !important;
+}
+
+/* Light mode — hr and borders */
+body:not(.dark-mode) hr {
+  border-color: #cbd5e1 !important;
+}
+
+/* Light mode — buttons */
+body:not(.dark-mode) .circular-button {
+  background-color: #e2e8f0 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+body:not(.dark-mode) .circular-button:hover {
+  background-color: #cbd5e1 !important;
+  filter: none !important;
+}
+
+/* Light mode — progress bar track */
+body:not(.dark-mode) .progress-bar {
+  background-color: #cbd5e1 !important;
+}
+
+/* Light mode — connection status bar */
+body:not(.dark-mode) .status-bar {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  border: 1px solid rgba(148,163,184,0.3);
+}
+
+/* Light mode — pill badges */
+body:not(.dark-mode) .pill-gray {
+  background-color: rgba(71,85,105,0.1) !important;
+  color: #475569 !important;
+}
+
+/* Light mode — inputs */
+body:not(.dark-mode) input[type="text"],
+body:not(.dark-mode) input[type="number"],
+body:not(.dark-mode) input[type="password"],
+body:not(.dark-mode) select {
+  background-color: #fff !important;
+  border-color: #94a3b8 !important;
+  color: #1e293b !important;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.06);
+}
+body:not(.dark-mode) input:focus,
+body:not(.dark-mode) select:focus {
+  border-color: #2563eb !important;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.12) !important;
+}
+
+/* Light mode — mode dropdown */
+body:not(.dark-mode) .mode-list {
+  background-color: #fff !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+}
+body:not(.dark-mode) .mode-item:hover {
+  background-color: #f1f5f9 !important;
+}
+body:not(.dark-mode) .mode-item {
+  color: #1e293b !important;
+}
+
+/* Light mode — battery colors stay vivid */
+body:not(.dark-mode) .battery-status.green { color: #16a34a !important; }
+body:not(.dark-mode) .battery-status.yellow { color: #d97706 !important; }
+body:not(.dark-mode) .battery-status.red { color: #dc2626 !important; }
+
+/* Light mode — OSD overlay on video */
+body:not(.dark-mode) .osd-block {
+  background: rgba(255,255,255,0.82) !important;
+  color: #0f172a !important;
+}
+body:not(.dark-mode) .osd-label {
+  color: #2563eb !important;
+}
+body:not(.dark-mode) .osd-val {
+  color: #0f172a !important;
+}
+
 @media (max-width: 990px) {
   .dashboard-container {
     height: 100% !important;
@@ -105,65 +239,26 @@ iframe {
 }
 
 @media (min-width: 3000px) {
-  .desktop-nav {
-    margin-left: 24vw !important;
-  }
-  .dashboard {
-    margin-right: 24vw !important;
-  }
+  .desktop-nav { margin-left: 24vw !important; }
+  .dashboard   { margin-right: 24vw !important; }
 }
-
-@media (min-width: 2760px) {
-  @media (max-width: 3000px) {
-    .desktop-nav {
-      margin-left: 22vw !important;
-    }
-    .dashboard {
-      margin-right: 22vw !important;
-    }
-  }
+@media (min-width: 2760px) and (max-width: 3000px) {
+  .desktop-nav { margin-left: 22vw !important; }
+  .dashboard   { margin-right: 22vw !important; }
 }
-
-@media (min-width: 2420px) {
-  @media (max-width: 2760px) {
-    .desktop-nav {
-      margin-left: 20vw !important;
-    }
-    .dashboard {
-      margin-right: 20vw !important;
-    }
-  }
+@media (min-width: 2420px) and (max-width: 2760px) {
+  .desktop-nav { margin-left: 20vw !important; }
+  .dashboard   { margin-right: 20vw !important; }
 }
-
-@media (min-width: 2080px) {
-  @media (max-width: 2420px) {
-    .desktop-nav {
-      margin-left: 15vw !important;
-    }
-    .dashboard {
-      margin-right: 15vw !important;
-    }
-  }
+@media (min-width: 2080px) and (max-width: 2420px) {
+  .desktop-nav { margin-left: 15vw !important; }
+  .dashboard   { margin-right: 15vw !important; }
 }
-
-@media (min-width: 1820px) {
-  @media (max-width: 2080px) {
-    .desktop-nav {
-      margin-left: 10vw !important;
-    }
-    .dashboard {
-      margin-right: 10vw !important;
-    }
-  }
+@media (min-width: 1820px) and (max-width: 2080px) {
+  .desktop-nav { margin-left: 10vw !important; }
+  .dashboard   { margin-right: 10vw !important; }
 }
-
-@media (min-width: 1620px) {
-  @media (max-width: 1820px) {
-    .desktop-nav {
-      margin-left: 5vw !important;
-    }
-    .dashboard {
-      margin-right: 5vw !important;
-    }
-  }
+@media (min-width: 1620px) and (max-width: 1820px) {
+  .desktop-nav { margin-left: 5vw !important; }
+  .dashboard   { margin-right: 5vw !important; }
 }
