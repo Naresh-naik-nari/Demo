@@ -26,7 +26,6 @@
       <div class="connection-status-panel col-span-12 row-span-1">
         <ConnectionStatus />
       </div>
-      
       <div class="live-feed col-span-6 row-span-4">
         <LiveFeed />
       </div>

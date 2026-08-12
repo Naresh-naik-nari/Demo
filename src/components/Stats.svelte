@@ -1,4 +1,4 @@
-z<script lang="ts">
+<script lang="ts">
   import {
     missionPlanTitleStore,
     missionCountStore,
