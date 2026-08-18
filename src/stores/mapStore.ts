@@ -7,3 +7,4 @@ export const mapTypeStore = writable<string>('OpenStreetMap');
 export const mapTileLayerStore = writable<L.TileLayer | null>(null);
 export const mapZoomStore = writable<number>(18);
 export const lockViewStore = writable<boolean>(true);
+export const threeDMapStore = writable<any>(null);

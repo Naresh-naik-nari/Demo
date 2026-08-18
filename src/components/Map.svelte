@@ -18,6 +18,7 @@
   } from '../stores/missionPlanStore';
   import { get } from 'svelte/store';
   import Modal from './Modal.svelte';
+  import OfflineMapDownloader from './OfflineMapDownloader.svelte';
 
   export let hideOverlay: boolean = false;
   export let mavLocation: L.LatLng | { lat: number; lng: number };
@@ -28,6 +29,8 @@
     secondaryColorStore,
     tertiaryColorStore
   } from '../stores/customizationStore';
+  
+  let showOfflineDownloader = false;
 
   let L: typeof import('leaflet');
   let leafletMap: any = get(mapStore);
@@ -71,6 +74,9 @@
   let mavMarker: L.Marker;
   let isDragging = false;
   let darkMode = get(darkModeStore);
+  let downloadedRadius: number | null = null;
+  let downloadedCenter: { lat: number; lng: number } | null = null;
+  let radiusCircle: L.Circle | null = null;
 
   $: darkMode = $darkModeStore;
   $: primaryColor = $primaryColorStore;
@@ -251,6 +257,47 @@
   function toggleLockView() {
     lockView = !lockView;
     lockViewStore.set(lockView);
+  }
+
+  function showDownloadedArea(center: { lat: number; lng: number }, radiusKm: number) {
+    // Remove existing circle if any
+    if (radiusCircle && leafletMap) {
+      leafletMap.removeLayer(radiusCircle);
+    }
+    
+    if (L && leafletMap) {
+      // Create circle overlay showing downloaded area
+      radiusCircle = L.circle([center.lat, center.lng], {
+        radius: radiusKm * 1000, // Convert km to meters
+        color: '#3b82f6',
+        fillColor: '#3b82f6',
+        fillOpacity: 0.1,
+        weight: 2,
+        dashArray: '5, 10'
+      });
+      
+      radiusCircle.addTo(leafletMap);
+      
+      // Add popup
+      radiusCircle.bindPopup(`
+        <strong>Downloaded Area</strong><br>
+        Radius: ${radiusKm} km<br>
+        Center: ${center.lat.toFixed(6)}°, ${center.lng.toFixed(6)}°<br>
+        <em>Maps available offline in this area</em>
+      `);
+      
+      downloadedCenter = center;
+      downloadedRadius = radiusKm;
+    }
+  }
+
+  function clearDownloadedArea() {
+    if (radiusCircle && leafletMap) {
+      leafletMap.removeLayer(radiusCircle);
+      radiusCircle = null;
+      downloadedCenter = null;
+      downloadedRadius = null;
+    }
   }
 
   function toggleFullScreen(element: HTMLElement) {
@@ -491,6 +538,14 @@
 
 <div class="map-container" style="--primaryColor: {primaryColor}; --secondaryColor: {secondaryColor}; --tertiaryColor: {tertiaryColor}; --fontColor: {fontColor};">
   <div id={id !== null ? id : 'map'} class="relative h-full rounded-2xl z-0"></div>
+  {#if downloadedCenter && downloadedRadius}
+    <button class="map-btn absolute top-[9.4rem] right-2 text-[#ffffff] bg-opacity-75 p-2 px-[13px] rounded-full" on:click={clearDownloadedArea} title="Hide Downloaded Area"> 
+      <i class="fas fa-eye-slash"></i>
+    </button>
+  {/if}
+  <button class="map-btn absolute top-[6.6rem] right-2 text-[#ffffff] bg-opacity-75 p-2 px-[13px] rounded-full" on:click={() => showOfflineDownloader = true} title="Download Offline Maps"> 
+    <i class="fas fa-download"></i>
+  </button>
   <button class="map-btn absolute top-[3.8rem] right-2 text-[#ffffff] bg-opacity-75 p-2 {lockView ? 'px-[15px]' : 'px-[13px]'} rounded-full" on:click={toggleLockView}> 
     <i class="fas {lockView ? 'fa-lock' : 'fa-lock-open'}"></i>
   </button>
@@ -516,3 +571,8 @@
     </div>
   {/if}
 </div>
+
+<OfflineMapDownloader 
+  bind:isOpen={showOfflineDownloader} 
+  onDownloadComplete={(center, radius) => showDownloadedArea(center, radius)}
+/>
