@@ -4,7 +4,7 @@
 
 Added comprehensive offline maps functionality to the Sidak Ground Control Station, allowing users to pre-download map tiles for operation without internet connectivity. The feature provides coverage within a configurable radius (default 10 km) around any location.
 
-## What Was Added
+## What Was Added 
 
 ### 1. New Component: OfflineMapDownloader.svelte
 

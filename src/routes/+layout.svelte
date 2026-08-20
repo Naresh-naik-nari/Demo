@@ -45,7 +45,7 @@
   import { loggedInStore } from '../stores/authStore';
   import { get, writable } from 'svelte/store';
   import Notification from '../components/Notification.svelte';
-  import SerialPortModal from '../components/SerialPortModal.svelte';
+  import ConnectionModal from '../components/ConnectionModal.svelte';
   import { mapTypeStore } from '../stores/mapStore';
 
   let showPortModal = false;
@@ -78,9 +78,8 @@
     }
   }
 
-  async function handlePortSelected(portPath: string) {
-    // Port was selected and connect was triggered via select_port endpoint
-    // Just sync the status
+  async function handlePortSelected(config: any) {
+    // Connection was established via connect endpoint
     await syncSerialStatus();
   }
 
@@ -865,10 +864,10 @@
   </div>
 </main>
 
-<SerialPortModal
+<ConnectionModal
   isOpen={showPortModal}
   onClose={() => { showPortModal = false; }}
-  onSelectPort={handlePortSelected}
+  onConnect={handlePortSelected}
 />
 
 <style>

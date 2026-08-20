@@ -1,5 +1,6 @@
 import { SerialPort } from 'serialport';
 import { connect, type Socket } from 'net';
+import { createSocket, type Socket as UDPSocket } from 'dgram';
 import {
     MavLinkPacketSplitter,
     MavLinkPacketParser,
@@ -8,6 +9,10 @@ import {
     send
 } from 'node-mavlink';
 import { REGISTRY } from '$lib/server/mavlink-registry';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type ConnectionType = 'serial' | 'tcp' | 'udp';
+type PortType = SerialPort | Socket | UDPSocket | null;
 
 // ─── Singleton state on globalThis ───────────────────────────────────────────
 // Persists across Vite HMR reloads since globalThis survives module re-execution.
@@ -40,7 +45,7 @@ if (globalThis.__mav?.port) {
 
 if (!globalThis.__mav) {
     globalThis.__mav = {
-        port:              null as SerialPort | Socket | null,
+        port:              null as PortType,
         reader:            null as MavLinkPacketParser | null,
         online:            false,
         connecting:        false,
@@ -50,6 +55,9 @@ if (!globalThis.__mav) {
         promise:           null as Promise<void> | null,
         lastKnownPorts:    [] as string[],  // for USB hotplug detection
         usbWatchInterval:  null as NodeJS.Timeout | null,
+        connectionType:    'serial' as ConnectionType,
+        udpRemoteHost:     null as string | null,
+        udpRemotePort:     null as number | null,
     };
 }
 const S = globalThis.__mav;
@@ -84,7 +92,7 @@ if (!S.usbWatchInterval) {
                 // Small delay to let Windows finish enumerating the device
                 await new Promise(r => setTimeout(r, 1500));
                 try {
-                    await forceConnect();
+                    await forceConnect({ type: 'serial' });
                 } catch {
                     // Silent — not every new USB device is a flight controller
                 }
@@ -95,8 +103,73 @@ if (!S.usbWatchInterval) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function getPort()   { return S.port as SerialPort | Socket | null; }
+function getPort()   { return S.port as PortType; }
 function getReader() { return S.reader as MavLinkPacketParser | null; }
+
+/** Connect via UDP (Ethernet/WiFi) */
+async function connectUDP(host: string, port: number, bindPort?: number): Promise<void> {
+    console.log(`🌐 Connecting to ${host}:${port} via UDP...`);
+    
+    const udpSocket = createSocket('udp4');
+    S.port = udpSocket;
+    S.connectionType = 'udp';
+    S.udpRemoteHost = host;
+    S.udpRemotePort = port;
+    
+    const actualBindPort = bindPort || 14550; // Default MAVLink UDP port
+    
+    return new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error(`UDP connection timeout after 10s`));
+        }, 10000);
+        
+        udpSocket.on('error', (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
+        
+        udpSocket.on('message', (msg) => {
+            clearTimeout(timeout);
+            if (!S.online) {
+                console.log(`✅ Receiving MAVLink data via UDP from ${host}:${port}`);
+                S.online = true;
+                resolve();
+            }
+        });
+        
+        // Bind to local port
+        udpSocket.bind(actualBindPort, () => {
+            console.log(`🔌 UDP socket bound to port ${actualBindPort} - listening for MAVLink packets`);
+        });
+    });
+}
+
+/** Connect via TCP (Ethernet/WiFi) */
+async function connectTCP(host: string, port: number): Promise<void> {
+    console.log(`🌐 Connecting to ${host}:${port} via TCP...`);
+    
+    return new Promise<void>((resolve, reject) => {
+        const tcpSocket = connect(port, host);
+        S.port = tcpSocket;
+        S.connectionType = 'tcp';
+        
+        const timeout = setTimeout(() => {
+            tcpSocket.destroy();
+            reject(new Error(`TCP connection timeout after 10s`));
+        }, 10000);
+        
+        tcpSocket.on('connect', () => {
+            clearTimeout(timeout);
+            console.log(`✅ TCP connected to ${host}:${port}`);
+            resolve();
+        });
+        
+        tcpSocket.on('error', (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
+    });
+}
 
 /**
  * Auto-detect the best MAVLink port:
@@ -167,8 +240,20 @@ async function detectPort(): Promise<string | null> {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/** Called by Connect button — opens the port */
-async function forceConnect(portOverride?: string): Promise<void> {
+/** 
+ * Connect to MAVLink device
+ * @param options Connection options
+ * - For Serial: { type: 'serial', port?: string }
+ * - For TCP: { type: 'tcp', host: string, port: number }
+ * - For UDP: { type: 'udp', host: string, port: number, bindPort?: number }
+ */
+async function forceConnect(options?: {
+    type?: ConnectionType;
+    port?: string;
+    host?: string;
+    portNumber?: number;
+    bindPort?: number;
+}): Promise<void> {
     if (S.connecting) {
         console.log('⏳ Already connecting...');
         return S.promise ?? Promise.resolve();
@@ -177,12 +262,27 @@ async function forceConnect(portOverride?: string): Promise<void> {
         console.log('✅ Already connected');
         return;
     }
-    if (portOverride) {
-        process.env.USB_SERIAL_PORT = portOverride;
-        S.accessDenied = false;
+    
+    const connectionType = options?.type || 'serial';
+    
+    if (connectionType === 'serial') {
+        if (options?.port) {
+            process.env.USB_SERIAL_PORT = options.port;
+            S.accessDenied = false;
+        }
+        S.promise = _openPortSerial().finally(() => { S.promise = null; });
+    } else if (connectionType === 'tcp') {
+        if (!options?.host || !options?.portNumber) {
+            throw new Error('TCP connection requires host and port');
+        }
+        S.promise = _openPortTCP(options.host, options.portNumber).finally(() => { S.promise = null; });
+    } else if (connectionType === 'udp') {
+        if (!options?.host || !options?.portNumber) {
+            throw new Error('UDP connection requires host and port');
+        }
+        S.promise = _openPortUDP(options.host, options.portNumber, options.bindPort).finally(() => { S.promise = null; });
     }
-
-    S.promise = _openPort().finally(() => { S.promise = null; });
+    
     return S.promise;
 }
 
@@ -207,12 +307,15 @@ function getConnectionStatus() {
         portOpen:   !!(getPort()),
         online:     S.online as boolean,
         connecting: S.connecting as boolean,
+        type:       S.connectionType as ConnectionType,
+        udpHost:    S.udpRemoteHost,
+        udpPort:    S.udpRemotePort,
     };
 }
 
-// ─── Internal ─────────────────────────────────────────────────────────────────
+// ─── Internal - Serial ────────────────────────────────────────────────────────
 
-async function _openPort(): Promise<void> {
+async function _openPortSerial(): Promise<void> {
     S.connecting = true;
 
     let portPath: string | null = null;
@@ -274,37 +377,94 @@ async function _openPort(): Promise<void> {
     S.connecting = false;
 }
 
+// ─── Internal - TCP/UDP ───────────────────────────────────────────────────────
+
+async function _openPortTCP(host: string, port: number): Promise<void> {
+    S.connecting = true;
+    S.connectionType = 'tcp';
+    
+    try {
+        await connectTCP(host, port);
+        _attachReaderTCP();
+        _attachListenersTCP();
+        console.log(`✅ TCP connection established to ${host}:${port}`);
+    } catch (err) {
+        S.connecting = false;
+        S.port = null;
+        S.reader = null;
+        S.online = false;
+        console.error(`❌ Failed to connect via TCP:`, err);
+        throw err;
+    }
+    
+    S.connecting = false;
+}
+
+async function _openPortUDP(host: string, port: number, bindPort?: number): Promise<void> {
+    S.connecting = true;
+    S.connectionType = 'udp';
+    
+    try {
+        await connectUDP(host, port, bindPort);
+        _attachReaderUDP();
+        _attachListenersUDP();
+        console.log(`✅ UDP connection established to ${host}:${port}`);
+    } catch (err) {
+        S.connecting = false;
+        if (S.port) {
+            try { (S.port as UDPSocket).close(); } catch {}
+        }
+        S.port = null;
+        S.reader = null;
+        S.online = false;
+        console.error(`❌ Failed to connect via UDP:`, err);
+        throw err;
+    }
+    
+    S.connecting = false;
+}
+
 async function _closePort(): Promise<void> {
     // Always reset state flags regardless of whether port is open
     S.accessDenied = false;
     S.connecting = false;
+    S.udpRemoteHost = null;
+    S.udpRemotePort = null;
 
     const p = S.port;
+    const connType = S.connectionType;
     S.port = null;
     if (!p) return;
-    console.log('🔌 Closing connection...');
+    
+    console.log(`🔌 Closing ${connType} connection...`);
     p.removeAllListeners();
     S.reader?.removeAllListeners();
     S.reader = null;
     S.online = false;
 
-    // Use close() first — it flushes and properly releases the Windows COM handle.
-    // destroy() alone does not reliably release the handle on Windows.
-    await new Promise<void>((resolve) => {
-        try {
-            (p as SerialPort).close((err) => {
-                if (err) console.warn('⚠️ Close warning:', err.message);
+    if (connType === 'serial') {
+        // SerialPort specific close
+        await new Promise<void>((resolve) => {
+            try {
+                (p as SerialPort).close((err) => {
+                    if (err) console.warn('⚠️ Close warning:', err.message);
+                    try { (p as any).destroy(); } catch { /* ignore */ }
+                    resolve();
+                });
+            } catch {
                 try { (p as any).destroy(); } catch { /* ignore */ }
                 resolve();
-            });
-        } catch {
-            try { (p as any).destroy(); } catch { /* ignore */ }
-            resolve();
-        }
-    });
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
+    } else if (connType === 'tcp') {
+        // TCP socket close
+        (p as Socket).destroy();
+    } else if (connType === 'udp') {
+        // UDP socket close
+        (p as UDPSocket).close();
+    }
 
-    // Extra buffer for Windows to release the handle before any reconnect attempt
-    await new Promise(r => setTimeout(r, 1500));
     console.log('✅ Connection closed');
 }
 
@@ -313,6 +473,38 @@ function _attachReader(): void {
         .pipe(new MavLinkPacketSplitter())
         .pipe(new MavLinkPacketParser());
 
+    S.reader.on('data', (packet: any) => {
+        S.online = true;
+        const clazz = REGISTRY[packet.header.msgid];
+        if (clazz) {
+            const data = clazz ? packet.protocol.data(packet.payload, clazz) : null;
+            if (!data) return;
+            const sysId  = packet.header.systemId;
+            const compId = packet.header.componentId;
+            const entry = `${clazz.MSG_NAME}(${clazz.MAGIC_NUMBER})::${new Date().toISOString()}::sysid=${sysId},compid=${compId}::${JSON.stringify(convertBigIntToNumber(data))}`;
+            S.logs.push(entry);
+            S.newLogs.push(entry);
+            if (entry.includes('_ACK') && !entry.includes('"command":512')) console.log(entry);
+        }
+    });
+}
+
+function _attachReaderTCP(): void {
+    // TCP uses streams just like serial
+    _attachReader();
+}
+
+function _attachReaderUDP(): void {
+    // UDP requires manual packet handling
+    const splitter = new MavLinkPacketSplitter();
+    S.reader = new MavLinkPacketParser();
+    
+    splitter.pipe(S.reader);
+    
+    (S.port as UDPSocket).on('message', (msg) => {
+        splitter.write(msg);
+    });
+    
     S.reader.on('data', (packet: any) => {
         S.online = true;
         const clazz = REGISTRY[packet.header.msgid];
@@ -342,14 +534,61 @@ function _attachListeners(): void {
     });
 }
 
+function _attachListenersTCP(): void {
+    (S.port as Socket).on('close', () => {
+        console.log('⚠️ TCP connection closed');
+        S.port = null;
+        S.reader = null;
+        S.online = false;
+        S.logs.push('MAVLink TCP connection closed');
+    });
+    
+    (S.port as Socket).on('error', (err: Error) => {
+        console.error('❌ TCP error:', err.message);
+        S.online = false;
+    });
+}
+
+function _attachListenersUDP(): void {
+    (S.port as UDPSocket).on('close', () => {
+        console.log('⚠️ UDP connection closed');
+        S.port = null;
+        S.reader = null;
+        S.online = false;
+        S.logs.push('MAVLink UDP connection closed');
+    });
+    
+    (S.port as UDPSocket).on('error', (err: Error) => {
+        console.error('❌ UDP error:', err.message);
+        S.online = false;
+    });
+}
+
 // ─── MAVLink commands ─────────────────────────────────────────────────────────
+
+async function _send(message: any): Promise<void> {
+    const p = getPort();
+    if (!p || !getReader()) {
+        S.online = false;
+        throw new Error('Not connected');
+    }
+    
+    if (S.connectionType === 'udp' && S.udpRemoteHost && S.udpRemotePort) {
+        // UDP requires manual send
+        const buffer = message.serialize ? message.serialize() : message;
+        (p as UDPSocket).send(buffer, S.udpRemotePort, S.udpRemoteHost);
+    } else {
+        // Serial and TCP use streams
+        await send(p as any, message);
+    }
+}
 
 async function requestStatus() {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     for (const id of [common.GlobalPositionInt.MSG_ID, common.GpsRawInt.MSG_ID, common.MissionCurrent.MSG_ID, common.BatteryStatus.MSG_ID]) {
         const r = new common.RequestMessageCommand();
         r.targetSystem = 1; r.targetComponent = 1; r.messageId = id; r.responseTarget = 1;
-        await send(p, r);
+        await _send(r);
     }
 }
 
@@ -357,14 +596,14 @@ async function requestParameters() {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const r = new common.ParamRequestList();
     r.targetSystem = 1; r.targetComponent = 1;
-    await send(p, r);
+    await _send(r);
 }
 
 async function writeParameter(id: string, value: number, type: number) {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const r = new common.ParamSet();
     r.targetSystem = 1; r.targetComponent = 1; r.paramId = id; r.paramValue = value; r.paramType = type;
-    await send(p, r);
+    await _send(r);
 }
 
 async function sendMavlinkCommand(command: string, params: number[], useCmdLong = false, useArduPilotMega = false) {
@@ -376,14 +615,14 @@ async function sendMavlinkCommand(command: string, params: number[], useCmdLong 
     if (useArduPilotMega) msg.command = parseInt(`${ardupilotmega.MavCmd[command as keyof typeof ardupilotmega.MavCmd]}`);
     else msg.command = common.MavCmd[command as keyof typeof common.MavCmd];
     params.forEach((v, i) => { if (v) (msg as any)[`_param${i + 1}`] = v; });
-    await send(p, msg);
+    await _send(msg);
 }
 
 async function setMissionCount(numItems: number) {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const m = new common.MissionCount();
     m.targetSystem = 1; m.targetComponent = 1; m.count = numItems; m.opaqueId = 0;
-    await send(p, m);
+    await _send(m);
     await new Promise(r => setTimeout(r, 250));
 }
 
@@ -400,14 +639,14 @@ async function loadMissionItem(item: any, index: number) {
     m.x = Number((item.lat * 1e7).toFixed(0));
     m.y = Number((item.lon * 1e7).toFixed(0));
     m.z = item.alt ?? 0; m.missionType = 0;
-    await send(p, m);
+    await _send(m);
 }
 
 async function clearAllMissionItems() {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const m = new common.MissionClearAll();
     m.targetSystem = 1; m.targetComponent = 1;
-    await send(p, m);
+    await _send(m);
 }
 
 async function setPositionLocal(x: number, y: number, z: number) {
@@ -416,7 +655,7 @@ async function setPositionLocal(x: number, y: number, z: number) {
     m.timeBootMs = 0; m.targetSystem = 1; m.targetComponent = 1;
     m.coordinateFrame = 1; (m as any).typeMask = 0b011111111000;
     m.x = x; m.y = y; m.z = z; m.yawRate = 0;
-    await send(p, m);
+    await _send(m);
 }
 
 function convertBigIntToNumber(obj: any): any {

@@ -142,10 +142,36 @@ export const POST: RequestHandler = async (event): Promise<Response> => {
             const portPath = event.request.headers.get('port');
             if (!portPath) return new Response('Port not specified', { status: 400 });
             try {
-                await forceConnect(portPath);
+                await forceConnect({ type: 'serial', port: portPath });
                 return new Response(JSON.stringify(getConnectionStatus()), { status: 200, headers: { 'Content-Type': 'application/json' } });
             } catch (err) {
                 return new Response(JSON.stringify({ ...getConnectionStatus(), error: (err as Error).message }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+        }
+        case 'connect': {
+            try {
+                const body = await event.request.json();
+                const { type, port, host, portNumber, bindPort } = body;
+                
+                if (!type) {
+                    return new Response('Connection type not specified', { status: 400 });
+                }
+                
+                await forceConnect({
+                    type,
+                    port,
+                    host,
+                    portNumber,
+                    bindPort
+                });
+                
+                return new Response(JSON.stringify(getConnectionStatus()), { 
+                    status: 200, 
+                    headers: { 'Content-Type': 'application/json' } 
+                });
+            } catch (err) {
+                console.error('Connection error:', err);
+                return new Response((err as Error).message, { status: 500 });
             }
         }
             try {
