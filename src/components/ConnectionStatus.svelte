@@ -2,6 +2,7 @@
     import { onlineStore, mavArmedStateStore, mavPendingArmStore } from '../stores/mavlinkStore';
     import { darkModeStore, primaryColorStore, secondaryColorStore, tertiaryColorStore } from '../stores/customizationStore';
     import { get } from 'svelte/store';
+    import Notification from './Notification.svelte';
 
     $: darkMode       = $darkModeStore;
     $: primaryColor   = $primaryColorStore;
@@ -56,7 +57,13 @@
         }, 5000);
 
         try {
-            await fetch('/api/mavlink/send_command', {
+            console.log(`🔓 Sending ${arming ? 'ARM' : 'DISARM'} command to flight controller...`);
+            console.log(`   Command: COMPONENT_ARM_DISARM`);
+            console.log(`   Params: [${param}, 21196]`);
+            console.log(`   Param1: ${param} (${arming ? '1=ARM' : '0=DISARM'})`);
+            console.log(`   Param2: 21196 (force flag - bypass pre-arm checks)`);
+            
+            const response = await fetch('/api/mavlink/send_command', {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
@@ -66,8 +73,21 @@
                     'useArduPilotMega': 'false'
                 }
             });
-        } catch {
+            
+            if (response.ok) {
+                const result = await response.text();
+                console.log(`✅ ARM/DISARM command sent successfully:`, result);
+            } else {
+                const error = await response.text();
+                console.error(`❌ ARM/DISARM command failed:`, error);
+                // Revert on error
+                mavPendingArmStore.set(null);
+                isPending = false;
+                if (pendingTimeout) clearTimeout(pendingTimeout);
+            }
+        } catch (error) {
             // Network error — revert
+            console.error(`❌ Network error sending ARM/DISARM:`, error);
             mavPendingArmStore.set(null);
             isPending = false;
             if (pendingTimeout) clearTimeout(pendingTimeout);
