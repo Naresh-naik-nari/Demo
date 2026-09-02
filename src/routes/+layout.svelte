@@ -162,7 +162,10 @@
         const portOpen: boolean = data.portOpen ?? false;
         const mavOnline: boolean = data.online ?? false;
 
+        console.log(`🔍 Poll: ${mavLogs.length} logs, portOpen=${portOpen}, online=${mavOnline}`);
+
         if (mavLogs.length > 0) {
+          console.log(`📨 Processing ${mavLogs.length} logs`);
           mavLogs.forEach((log: string) => {
             getLogs(log.replace(/\\"/g, '"') + '\n');
           });
@@ -245,11 +248,17 @@
   }
 
   // Helper functions to extract and parse values from log text
+  // Helper functions to extract and parse values from log text
+  // Handles: quoted strings, integers, floats, negatives, scientific notation (e.g. 1e-05)
   function extractValue(text: string, key: string): string {
-    const match = text.match(new RegExp(`"${key}":"?([^,"]+)"?`));
-    return match ? match[1].replace(/^"|"$/g, '') : '';
+    // Match quoted string value  →  "key":"some string"
+    const strMatch = text.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"` ));
+    if (strMatch) return strMatch[1].replace(/\u0000/g, '').trim();
+    // Match numeric value (int, float, negative, scientific)  →  "key":-1.5e-3
+    const numMatch = text.match(new RegExp(`"${key}"\\s*:\\s*(-?[\\d.]+(?:[eE][+-]?\\d+)?)`));
+    if (numMatch) return numMatch[1];
+    return '';
   }
-
   const parseLocation = (lat: string | null, lon: string | null): Position | null => {
     if (!lat || !lon) return null;
     return {
@@ -524,23 +533,25 @@
     },
 
     PARAM_VALUE: (text: string) => {
-      const paramId = extractValue(text, 'paramId');
+      // paramId is a char[16] in ArduPilot — JSON may contain \u0000 padding; extractValue already strips them
+      const paramId    = extractValue(text, 'paramId');
       const paramValue = extractValue(text, 'paramValue');
-      const paramType = extractValue(text, 'paramType');
-      
-      if (paramId && paramValue && paramType) {          
-          let param: Parameter = {
-              param_id: paramId,
-              param_value: decodeParameterValue(paramValue, paramType),
-              param_type: parseInt(paramType),
-              param_count: parseInt(extractValue(text, 'paramCount') || '0'),
-              param_index: parseInt(extractValue(text, 'paramIndex') || '0')
-          };
-          // update the store at the index of the parameter
-          let params = get(mavlinkParamStore);
-          params[paramId] = param;
-          mavlinkParamStore.set(params);
-      }
+      const paramType  = extractValue(text, 'paramType');
+
+      // Guard: skip if any required field is missing or paramId is blank after stripping
+      if (!paramId || paramValue === '' || !paramType) return;
+
+      const param: Parameter = {
+          param_id:    paramId,
+          param_value: decodeParameterValue(paramValue, paramType),
+          param_type:  parseInt(paramType),
+          param_count: parseInt(extractValue(text, 'paramCount') || '0'),
+          param_index: parseInt(extractValue(text, 'paramIndex') || '0'),
+      };
+      mavlinkParamStore.update(store => {
+          store[paramId] = param;
+          return store;
+      });
     },
 
     // Gimbal / camera telemetry from MOUNT_STATUS (MSG_ID 158)
@@ -552,16 +563,23 @@
     }
   };
 
-  async function getLogs(text: string) {
-    // truncate old logs to save memory
+  function getLogs(text: string) {
+    if (!text) return;
+
+    // Keep a bounded log for the event-log page (display only)
+    // Use a sliding window — do NOT drop messages that happen to be identical
+    // (e.g. repeated HEARTBEAT / MISSION_CURRENT); every message must be processed
     logs = logs.slice(-1000);
-
-    if (!text || logs.includes(text)) return;
-
     logs = [...logs, text];
     mavlinkLogStore.set(logs);
 
-    // Find which message type this is and process it
+    // Log the first 3 chars of the message type to confirm processing
+    const msgType = text.split('(')[0];
+    if (msgType !== 'HEARTBEAT') {
+      console.log(`🔄 Processing: ${msgType}`);
+    }
+
+    // Route to the right handler by message type — first match wins
     for (const [messageType, handler] of Object.entries(messageHandlers)) {
       if (text.includes(messageType)) {
         handler(text);
@@ -608,7 +626,17 @@
 
     setTimeout(() => {
       checkLoadedMission();
-      requestParameters();
+      // Don't request params immediately — wait until the FC is actually connected
+      // Poll every 3s until we get a successful connection, then send once
+      let paramRequestInterval = setInterval(async () => {
+        if (get(onlineStore)) {
+          clearInterval(paramRequestInterval);
+          await requestParameters();
+          console.log('📋 PARAM_REQUEST_LIST sent after connection confirmed');
+        }
+      }, 3000);
+      // Safety cap: stop trying after 2 minutes
+      setTimeout(() => clearInterval(paramRequestInterval), 120000);
     }, 2000);
     
     let checkCookieInterval = setInterval(() => {

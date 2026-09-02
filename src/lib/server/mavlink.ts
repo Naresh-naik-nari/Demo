@@ -1,14 +1,14 @@
 import { SerialPort } from 'serialport';
 import { connect, type Socket } from 'net';
 import { createSocket, type Socket as UDPSocket } from 'dgram';
-import {
-    MavLinkPacketSplitter,
-    MavLinkPacketParser,
-    common,
-    ardupilotmega,
-    send
-} from 'node-mavlink';
+import * as mavlink from 'node-mavlink';
 import { REGISTRY } from '$lib/server/mavlink-registry';
+
+// Destructure after import for better HMR compatibility
+const { MavLinkPacketSplitter, MavLinkPacketParser, MavLinkProtocolV2, common, minimal, ardupilotmega, send } = mavlink;
+
+// Create a protocol instance for serializing messages (system ID 255 = GCS, component ID 190 = ground control)
+const protocol = new MavLinkProtocolV2(255, 190);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ConnectionType = 'serial' | 'tcp' | 'udp';
@@ -22,8 +22,16 @@ declare const globalThis: any;
 if (globalThis.__mav?.port) {
     console.log('♻️ HMR reload — releasing orphaned port...');
     const _p = globalThis.__mav.port;
+    const _connType = globalThis.__mav.connectionType;
     try { _p.removeAllListeners(); } catch { /* ignore */ }
     try { globalThis.__mav.reader?.removeAllListeners(); } catch { /* ignore */ }
+    
+    // Clear heartbeat interval if it exists
+    if (globalThis.__mav.heartbeatInterval) {
+        clearInterval(globalThis.__mav.heartbeatInterval);
+        globalThis.__mav.heartbeatInterval = null;
+    }
+    
     globalThis.__mav.port         = null;
     globalThis.__mav.reader       = null;
     globalThis.__mav.online       = false;
@@ -37,9 +45,16 @@ if (globalThis.__mav?.port) {
     }
     // Use close() so Windows releases the handle before the module re-runs
     try {
-        _p.close(() => { try { _p.destroy(); } catch { /* ignore */ } });
+        if (_connType === 'serial') {
+            _p.close(() => { try { _p.destroy(); } catch { /* ignore */ } });
+        } else if (_connType === 'tcp') {
+            _p.destroy();
+        } else if (_connType === 'udp') {
+            _p.close();
+        }
     } catch {
-        try { _p.destroy(); } catch { /* ignore */ }
+        try { _p.destroy?.(); } catch { /* ignore */ }
+        try { _p.close?.(); } catch { /* ignore */ }
     }
 }
 
@@ -58,6 +73,7 @@ if (!globalThis.__mav) {
         connectionType:    'serial' as ConnectionType,
         udpRemoteHost:     null as string | null,
         udpRemotePort:     null as number | null,
+        udpSeq:            0,  // UDP sequence number
     };
 }
 const S = globalThis.__mav;
@@ -108,39 +124,86 @@ function getReader() { return S.reader as MavLinkPacketParser | null; }
 
 /** Connect via UDP (Ethernet/WiFi) */
 async function connectUDP(host: string, port: number, bindPort?: number): Promise<void> {
-    console.log(`🌐 Connecting to ${host}:${port} via UDP...`);
+    // bindPort is the LOCAL port we listen on (GCS side).
+    // port is the REMOTE port on the FC we send heartbeats/commands to.
+    // Default to 14550 if no bindPort specified.
+    const actualBindPort = bindPort ?? 14550;
+
+    console.log(`🌐 Connecting to FC at ${host}:${port} via UDP (listening on local port ${actualBindPort})...`);
+    console.log(`   Received bindPort=${bindPort}, using actualBindPort=${actualBindPort}`);
     
-    const udpSocket = createSocket('udp4');
+    const udpSocket = createSocket({ type: 'udp4', reuseAddr: true });
     S.port = udpSocket;
     S.connectionType = 'udp';
     S.udpRemoteHost = host;
     S.udpRemotePort = port;
     
-    const actualBindPort = bindPort || 14550; // Default MAVLink UDP port
-    
     return new Promise<void>((resolve, reject) => {
+        let resolved = false;
+        
         const timeout = setTimeout(() => {
-            reject(new Error(`UDP connection timeout after 10s`));
+            // For UDP, don't fail the connection - just mark as ready
+            // The device might not be sending data yet, or we need to send heartbeat first
+            if (!resolved) {
+                console.log(`⚠️ No MAVLink data received after 10s - continuing anyway (UDP is connectionless)`);
+                S.online = false; // Will be set to true when data arrives
+                resolved = true;
+                resolve();
+            }
         }, 10000);
         
         udpSocket.on('error', (err) => {
             clearTimeout(timeout);
-            reject(err);
-        });
-        
-        udpSocket.on('message', (msg) => {
-            clearTimeout(timeout);
-            if (!S.online) {
-                console.log(`✅ Receiving MAVLink data via UDP from ${host}:${port}`);
-                S.online = true;
-                resolve();
+            if (!resolved) {
+                resolved = true;
+                reject(err);
             }
         });
         
-        // Bind to local port
-        udpSocket.bind(actualBindPort, () => {
-            console.log(`🔌 UDP socket bound to port ${actualBindPort} - listening for MAVLink packets`);
+        udpSocket.on('message', (msg) => {
+            if (!resolved) {
+                clearTimeout(timeout);
+                console.log(`✅ Receiving MAVLink data via UDP from ${host}:${port}`);
+                S.online = true;
+                resolved = true;
+                resolve();
+            } else if (!S.online) {
+                // First message after timeout
+                console.log(`✅ Receiving MAVLink data via UDP from ${host}:${port}`);
+                S.online = true;
+            }
         });
+        
+        // Bind to local port with error handling
+        try {
+            udpSocket.bind(actualBindPort, '0.0.0.0', () => {
+                console.log(`🔌 UDP socket bound to port ${actualBindPort} - listening for MAVLink packets`);
+                
+                // Send initial heartbeat to announce our presence
+                // This helps the flight controller know where to send data
+                setTimeout(() => {
+                    try {
+                        const heartbeat = createHeartbeat();
+                        const buffer = protocol.serialize(heartbeat, 0); // Sequence number 0 for first message
+                        udpSocket.send(buffer, port, host, (err) => {
+                            if (err) {
+                                console.warn('⚠️ Failed to send initial heartbeat:', err.message);
+                            } else {
+                                console.log(`💓 Sent initial heartbeat to ${host}:${port}`);
+                            }
+                        });
+                    } catch (err) {
+                        console.warn('⚠️ Could not send initial heartbeat:', (err as Error).message);
+                    }
+                }, 500); // Wait 500ms after bind before sending
+            });
+        } catch (err) {
+            clearTimeout(timeout);
+            if (!resolved) {
+                resolved = true;
+                reject(err);
+            }
+        }
     });
 }
 
@@ -404,11 +467,52 @@ async function _openPortUDP(host: string, port: number, bindPort?: number): Prom
     S.connecting = true;
     S.connectionType = 'udp';
     
+    // Close any existing connection first
+    if (S.port && S.connectionType === 'udp') {
+        console.log('🔄 Closing existing UDP connection before reconnecting...');
+        try {
+            (S.port as UDPSocket).close();
+            S.port = null;
+            S.reader = null;
+            await new Promise(r => setTimeout(r, 100)); // Wait for socket to fully close
+        } catch (err) {
+            console.warn('⚠️ Error closing existing socket:', (err as Error).message);
+        }
+    }
+    
     try {
         await connectUDP(host, port, bindPort);
+        
+        // Check if connection was closed during the wait (timeout triggered _closePort)
+        if (!S.port) {
+            throw new Error('Connection closed during UDP bind — no data received from FC');
+        }
+        
         _attachReaderUDP();
         _attachListenersUDP();
-        console.log(`✅ UDP connection established to ${host}:${port}`);
+        console.log(`✅ UDP socket ready - waiting for MAVLink telemetry from ${host}:${port}`);
+        
+        // Send periodic heartbeats to maintain connection
+        let heartbeatSeq = 1; // Start from 1 since initial heartbeat was 0
+        const heartbeatInterval = setInterval(() => {
+            if (!S.port) {
+                clearInterval(heartbeatInterval);
+                return;
+            }
+            
+            try {
+                const heartbeat = createHeartbeat();
+                const buffer = protocol.serialize(heartbeat, heartbeatSeq);
+                heartbeatSeq = (heartbeatSeq + 1) % 256; // Wrap at 256
+                (S.port as UDPSocket).send(buffer, port, host);
+            } catch (err) {
+                console.warn('⚠️ Heartbeat send failed:', (err as Error).message);
+            }
+        }, 1000); // Send heartbeat every second
+        
+        // Store the interval so it can be cleared on disconnect
+        (S as any).heartbeatInterval = heartbeatInterval;
+        
     } catch (err) {
         S.connecting = false;
         if (S.port) {
@@ -430,6 +534,12 @@ async function _closePort(): Promise<void> {
     S.connecting = false;
     S.udpRemoteHost = null;
     S.udpRemotePort = null;
+
+    // Clean up heartbeat interval if it exists
+    if ((S as any).heartbeatInterval) {
+        clearInterval((S as any).heartbeatInterval);
+        (S as any).heartbeatInterval = null;
+    }
 
     const p = S.port;
     const connType = S.connectionType;
@@ -495,30 +605,186 @@ function _attachReaderTCP(): void {
 }
 
 function _attachReaderUDP(): void {
-    // UDP requires manual packet handling
+    // Safety check: if port was closed during bind, abort
+    if (!S.port) {
+        console.warn('⚠️ _attachReaderUDP called but S.port is null — socket was closed');
+        return;
+    }
+
     const splitter = new MavLinkPacketSplitter();
     S.reader = new MavLinkPacketParser();
-    
     splitter.pipe(S.reader);
-    
-    (S.port as UDPSocket).on('message', (msg) => {
-        splitter.write(msg);
-    });
-    
+
+    // Rate-limit counters — log a summary every 5 s instead of every packet
+    let udpBytesTotal   = 0;
+    let udpPacketTotal  = 0;
+    let udpParseTotal   = 0;
+    let udpUnknownIds   = new Set<number>();
+    let paramCount      = 0;
+    let firstDataSeen   = false;
+    let seenMsgTypes    = new Set<string>(); // track unique message types received
+
+    const statsTimer = setInterval(() => {
+        if (udpPacketTotal === 0) return;
+        console.log(
+            `📡 UDP stats (5s): ${udpPacketTotal} packets | ${udpBytesTotal} bytes | ` +
+            `${udpParseTotal} decoded | params rx: ${paramCount}` +
+            (udpUnknownIds.size ? ` | unknown msgids: [${[...udpUnknownIds].join(',')}]` : '')
+        );
+        udpBytesTotal  = 0;
+        udpPacketTotal = 0;
+        udpParseTotal  = 0;
+        udpUnknownIds  = new Set();
+        paramCount     = 0;
+    }, 5000);
+
+    // Clean up timer when socket closes (guarded against null)
+    const udpPort = S.port as UDPSocket | null;
+    if (udpPort) {
+        udpPort.once('close', () => clearInterval(statsTimer));
+        udpPort.on('message', (msg) => {
+            udpBytesTotal += msg.length;
+            udpPacketTotal++;
+            splitter.write(msg);
+        });
+    } else {
+        // Socket was closed before we got here — clean up timer immediately
+        clearInterval(statsTimer);
+        return;
+    }
+
     S.reader.on('data', (packet: any) => {
+        if (!firstDataSeen) {
+            firstDataSeen = true;
+            // Correct header fields: sysid / compid / msgid (node-mavlink uses lowercase)
+            const sysId  = packet.header.sysid;
+            const compId = packet.header.compid;
+            const msgId  = packet.header.msgid;
+            console.log(`✅ First MAVLink packet decoded — sysid=${sysId} compid=${compId} msgid=${msgId}`);
+
+            // Immediately request full telemetry streams from the FC.
+            // ArduPilot won't stream anything except heartbeats until we ask.
+            // Send REQUEST_DATA_STREAM for every stream type at 4 Hz.
+            setTimeout(() => _requestAllDataStreams(), 200);
+        }
+
         S.online = true;
+
         const clazz = REGISTRY[packet.header.msgid];
-        if (clazz) {
-            const data = clazz ? packet.protocol.data(packet.payload, clazz) : null;
-            if (!data) return;
-            const sysId  = packet.header.systemId;
-            const compId = packet.header.componentId;
-            const entry = `${clazz.MSG_NAME}(${clazz.MAGIC_NUMBER})::${new Date().toISOString()}::sysid=${sysId},compid=${compId}::${JSON.stringify(convertBigIntToNumber(data))}`;
-            S.logs.push(entry);
-            S.newLogs.push(entry);
-            if (entry.includes('_ACK') && !entry.includes('"command":512')) console.log(entry);
+        if (!clazz) {
+            udpUnknownIds.add(packet.header.msgid);
+            return;
+        }
+
+        const data = packet.protocol.data(packet.payload, clazz);
+        if (!data) return;
+
+        udpParseTotal++;
+
+        // Log each NEW message type we see (once only) so we know what the FC is streaming
+        if (!seenMsgTypes.has(clazz.MSG_NAME)) {
+            seenMsgTypes.add(clazz.MSG_NAME);
+            console.log(`🆕 New message type from FC: ${clazz.MSG_NAME} (msgid=${packet.header.msgid})`);
+        }
+
+        // Use correct header property names (sysid / compid, not systemId / componentId)
+        const sysId  = packet.header.sysid;
+        const compId = packet.header.compid;
+        const entry  = `${clazz.MSG_NAME}(${clazz.MAGIC_NUMBER})::${new Date().toISOString()}::sysid=${sysId},compid=${compId}::${JSON.stringify(convertBigIntToNumber(data))}`;
+        S.logs.push(entry);
+        S.newLogs.push(entry);
+
+        // Always log ACKs (infrequent, important for arm/command debugging)
+        if (clazz.MSG_NAME === 'COMMAND_ACK') {
+            const ackCmd    = (data as any).command ?? '?';
+            const ackResult = (data as any).result  ?? '?';
+            // Map result codes: 0=ACCEPTED, 1=TEMP_REJECTED, 2=DENIED, 3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS
+            const resultNames: Record<number, string> = { 0:'ACCEPTED', 1:'TEMP_REJECTED', 2:'DENIED', 3:'UNSUPPORTED', 4:'FAILED', 5:'IN_PROGRESS' };
+            const resultStr = resultNames[ackResult] ?? `UNKNOWN(${ackResult})`;
+            // cmd 511 = SET_MESSAGE_INTERVAL, cmd 66 = REQUEST_DATA_STREAM
+            const cmdNames: Record<number, string> = { 511:'SET_MESSAGE_INTERVAL', 66:'REQUEST_DATA_STREAM', 400:'COMPONENT_ARM_DISARM', 176:'DO_SET_MODE' };
+            const cmdStr = cmdNames[ackCmd] ?? `CMD_${ackCmd}`;
+            console.log(`📨 COMMAND_ACK: ${cmdStr} → ${resultStr}`);
+        }
+
+        // Track param receive progress
+        if (clazz.MSG_NAME === 'PARAM_VALUE') {
+            paramCount++;
+            const paramIndex = (data as any).paramIndex ?? 0;
+            const paramTotal = (data as any).paramCount ?? 0;
+            if (paramIndex === 0 || paramIndex % 100 === 0 || paramIndex === paramTotal - 1) {
+                const paramId = ((data as any).paramId ?? '').replace(/\u0000/g, '');
+                console.log(`📋 PARAM_VALUE [${paramIndex}/${paramTotal}]: ${paramId} = ${(data as any).paramValue}`);
+            }
+        }
+
+        // Log STATUSTEXT messages (always relevant, low frequency)
+        if (clazz.MSG_NAME === 'STATUSTEXT') {
+            const text = ((data as any).text ?? '').replace(/\u0000/g, '');
+            const sev  = (data as any).severity ?? '';
+            console.log(`📢 STATUSTEXT sev=${sev}: ${text}`);
         }
     });
+
+    S.reader.on('error', (err: Error) => {
+        console.error('❌ UDP parser error:', err.message);
+    });
+}
+
+/**
+ * Ask the FC to start streaming all telemetry using SET_MESSAGE_INTERVAL (MAVCmd 511).
+ * This is the modern ArduPilot 4.x API — REQUEST_DATA_STREAM (MSG_ID 66) was deprecated.
+ * Each call sets a specific message type to stream at the given interval (microseconds).
+ */
+async function _requestAllDataStreams(): Promise<void> {
+    if (!getPort() || !getReader()) return;
+
+    // Message ID → interval in microseconds (250000 = 4 Hz, 500000 = 2 Hz, 100000 = 10 Hz)
+    const messages: { msgId: number; intervalUs: number; name: string }[] = [
+        { msgId:  0,  intervalUs: 1000000, name: 'HEARTBEAT'           },  // 1 Hz (already streaming, confirm)
+        { msgId:  1,  intervalUs:  500000, name: 'SYS_STATUS'          },  // 2 Hz — battery, sensors
+        { msgId:  24, intervalUs:  250000, name: 'GPS_RAW_INT'         },  // 4 Hz
+        { msgId:  30, intervalUs:  250000, name: 'ATTITUDE'            },  // 4 Hz
+        { msgId:  32, intervalUs:  250000, name: 'LOCAL_POSITION_NED'  },  // 4 Hz
+        { msgId:  33, intervalUs:  250000, name: 'GLOBAL_POSITION_INT' },  // 4 Hz
+        { msgId:  42, intervalUs:  500000, name: 'MISSION_CURRENT'     },  // 2 Hz
+        { msgId:  74, intervalUs:  500000, name: 'VFR_HUD'             },  // 2 Hz — airspeed, heading, throttle
+        { msgId: 147, intervalUs:  500000, name: 'BATTERY_STATUS'      },  // 2 Hz
+    ];
+
+    console.log('📡 Requesting telemetry streams via SET_MESSAGE_INTERVAL...');
+    for (const { msgId, intervalUs, name } of messages) {
+        try {
+            const cmd = new common.CommandLong();
+            cmd.targetSystem    = 1;
+            cmd.targetComponent = 1;
+            cmd.command         = 511; // MAV_CMD_SET_MESSAGE_INTERVAL
+            (cmd as any)._param1 = msgId;       // Message ID to stream
+            (cmd as any)._param2 = intervalUs;  // Interval in microseconds (-1 = disable, 0 = default)
+            (cmd as any)._param3 = 0;
+            (cmd as any)._param4 = 0;
+            (cmd as any)._param5 = 0;
+            (cmd as any)._param6 = 0;
+            (cmd as any)._param7 = 0;
+            await _send(cmd);
+            await new Promise(r => setTimeout(r, 30));
+        } catch (err) {
+            console.warn(`⚠️ SET_MESSAGE_INTERVAL failed for ${name} (${msgId}):`, (err as Error).message);
+        }
+    }
+
+    // Also try the legacy REQUEST_DATA_STREAM as a fallback for older firmware
+    try {
+        const ds = new common.RequestDataStream();
+        ds.targetSystem    = 1;
+        ds.targetComponent = 1;
+        ds.reqStreamId     = 0;   // ALL streams
+        ds.reqMessageRate  = 4;   // 4 Hz
+        ds.startStop       = 1;
+        await _send(ds);
+    } catch { /* older firmware may not support it — ignore */ }
+
+    console.log('✅ All data stream requests sent — telemetry should begin flowing');
 }
 
 function _attachListeners(): void {
@@ -566,6 +832,34 @@ function _attachListenersUDP(): void {
 
 // ─── MAVLink commands ─────────────────────────────────────────────────────────
 
+/** Create a heartbeat message safely */
+function createHeartbeat(): any {
+    try {
+        // Heartbeat is in the minimal module, not common
+        const HeartbeatClass = minimal.Heartbeat;
+        
+        if (!HeartbeatClass) {
+            console.error('Heartbeat class not found. minimal =', typeof minimal, Object.keys(minimal || {}));
+            throw new Error('Heartbeat class not available in minimal module');
+        }
+        
+        const hb = new HeartbeatClass();
+        hb.type = 6; // MAV_TYPE_GCS
+        hb.autopilot = 8; // MAV_AUTOPILOT_INVALID
+        hb.baseMode = 0;
+        hb.customMode = 0;
+        hb.systemStatus = 4; // MAV_STATE_ACTIVE
+        hb.mavlinkVersion = 3;
+        
+        return hb;
+    } catch (err) {
+        console.error('Failed to create heartbeat:', err);
+        console.error('minimal type:', typeof minimal);
+        console.error('minimal.Heartbeat type:', typeof minimal?.Heartbeat);
+        throw err;
+    }
+}
+
 async function _send(message: any): Promise<void> {
     const p = getPort();
     if (!p || !getReader()) {
@@ -574,22 +868,33 @@ async function _send(message: any): Promise<void> {
     }
     
     if (S.connectionType === 'udp' && S.udpRemoteHost && S.udpRemotePort) {
-        // UDP requires manual send
-        const buffer = message.serialize ? message.serialize() : message;
-        (p as UDPSocket).send(buffer, S.udpRemotePort, S.udpRemoteHost);
+        // UDP requires manual serialization using protocol
+        try {
+            // Use protocol.serialize with a sequence number
+            const seq = (S as any).udpSeq || 0;
+            (S as any).udpSeq = (seq + 1) % 256; // Increment sequence number, wrap at 256
+            
+            const buffer = protocol.serialize(message, seq);
+            (p as UDPSocket).send(buffer, S.udpRemotePort, S.udpRemoteHost);
+        } catch (err) {
+            console.error('Failed to serialize/send UDP message:', err);
+            throw err;
+        }
     } else {
-        // Serial and TCP use streams
+        // Serial and TCP use streams with the send utility
         await send(p as any, message);
     }
 }
 
 async function requestStatus() {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
-    for (const id of [common.GlobalPositionInt.MSG_ID, common.GpsRawInt.MSG_ID, common.MissionCurrent.MSG_ID, common.BatteryStatus.MSG_ID]) {
-        const r = new common.RequestMessageCommand();
-        r.targetSystem = 1; r.targetComponent = 1; r.messageId = id; r.responseTarget = 1;
-        await _send(r);
-    }
+    // REQUEST_DATA_STREAM is the reliable way to get continuous telemetry from ArduPilot.
+    // Only send it occasionally (not every heartbeat) — use a cooldown flag.
+    const now = Date.now();
+    const lastRequest: number = (S as any).lastStreamRequest ?? 0;
+    if (now - lastRequest < 30000) return; // Re-request at most every 30s
+    (S as any).lastStreamRequest = now;
+    await _requestAllDataStreams();
 }
 
 async function requestParameters() {

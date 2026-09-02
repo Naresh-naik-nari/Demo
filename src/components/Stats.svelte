@@ -453,6 +453,36 @@
     modeDropdownOpen = false;
     await sendMavlinkCommand('DO_SET_MODE', `${[1, modeNum]}`, 'true');
   }
+
+  // ARM / DISARM — 2-click confirm to prevent accidents
+  let armConfirmStep = false;
+  let armConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function armVehicle() {
+    if (!armConfirmStep) {
+      armConfirmStep = true;
+      if (armConfirmTimer) clearTimeout(armConfirmTimer);
+      armConfirmTimer = setTimeout(() => { armConfirmStep = false; }, 3000);
+      return;
+    }
+    armConfirmStep = false;
+    if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
+    // Switch to GUIDED first so FC accepts the ARM without needing RC input
+    await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true');
+  }
+
+  async function disarmVehicle() {
+    if (!armConfirmStep) {
+      armConfirmStep = true;
+      if (armConfirmTimer) clearTimeout(armConfirmTimer);
+      armConfirmTimer = setTimeout(() => { armConfirmStep = false; }, 3000);
+      return;
+    }
+    armConfirmStep = false;
+    if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[0, 21196]}`, 'true');
+  }
 </script>
 
 <div

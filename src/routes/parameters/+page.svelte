@@ -1,12 +1,12 @@
 <script lang="ts">
     import { darkModeStore, primaryColorStore, secondaryColorStore, tertiaryColorStore } from '../../stores/customizationStore';
     import { mavlinkParamStore, type Parameter, type ParameterMeta } from '../../stores/mavlinkStore';
-    import { onMount } from 'svelte';
+    import { onMount, onDestroy } from 'svelte';
     import { get, writable, type Writable } from 'svelte/store';
     import Modal from '../../components/Modal.svelte';
-    import { text } from '@sveltejs/kit';
 
     const loading: Writable<boolean> = writable(false);
+    const receiving: Writable<boolean> = writable(false); // true while FC is streaming params
     const success: Writable<string | null> = writable(null);
     const error: Writable<string | null> = writable(null);
     const modified: Writable<string[]> = writable([]);
@@ -15,51 +15,94 @@
     $: secondaryColor = $secondaryColorStore;
     $: tertiaryColor = $tertiaryColorStore;
     $: textColor = $darkModeStore ? '#ffffff' : '#000000';
-    
-    // Parameter type mapping with index signature
+
+    // Parameter type mapping
     // https://mavlink.io/en/messages/common.html#MAV_PARAM_TYPE
     const PARAM_TYPES: { [key: number]: string } = {
-        1: 'uint8',
-        2: 'int8',
-        3: 'uint16',
-        4: 'int16',
-        5: 'uint32',
-        6: 'int32',
-        7: 'uint64',
-        8: 'int64',
-        9: 'float',
-        10: 'double'
+        1: 'uint8',  2: 'int8',
+        3: 'uint16', 4: 'int16',
+        5: 'uint32', 6: 'int32',
+        7: 'uint64', 8: 'int64',
+        9: 'float',  10: 'double'
     };
 
     let searchTerm = '';
     let filteredParams: Parameter[] = [];
 
-    $: {
-        if ($mavlinkParamStore) {
-            filteredParams = Array.from(Object.values($mavlinkParamStore)).filter(param => 
-                param.param_id.toLowerCase().includes(searchTerm.toLowerCase())
-            );
-        }
-    }
+    // Reactive: keep filtered list in sync with the store AND the search box
+    $: filteredParams = Object.values($mavlinkParamStore).filter(param =>
+        param.param_id.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    // Live count displayed in the header
+    $: totalReceived = Object.keys($mavlinkParamStore).length;
+    // Total expected — read from the first param that arrived (param_count field)
+    $: totalExpected = totalReceived > 0
+        ? Object.values($mavlinkParamStore)[0].param_count
+        : 0;
+    $: allReceived = totalExpected > 0 && totalReceived >= totalExpected;
+
+    // Retry / poll state
+    let retryInterval: ReturnType<typeof setInterval> | null = null;
+    let prevCount = 0;
+    let staleTicks = 0;
+    const STALE_TICKS_BEFORE_RETRY = 4; // ~8 s of no new params → re-send request
 
     onMount(() => {
+        // Clear any stale params from a previous session
+        mavlinkParamStore.set({});
         requestParameters();
+
+        // Watch for stalled streams: if count stops growing for ~8 s and we haven't
+        // received everything yet, automatically re-send PARAM_REQUEST_LIST
+        retryInterval = setInterval(() => {
+            const count = Object.keys(get(mavlinkParamStore)).length;
+            if (count === 0) return; // haven't started yet — don't spam retries
+
+            if (count === prevCount && !allReceived) {
+                staleTicks++;
+                if (staleTicks >= STALE_TICKS_BEFORE_RETRY) {
+                    staleTicks = 0;
+                    console.warn(`⚠️ Param stream stalled at ${count}/${totalExpected} — retrying PARAM_REQUEST_LIST`);
+                    requestParameters(/* silent */ true);
+                }
+            } else {
+                staleTicks = 0;
+            }
+            prevCount = count;
+
+            // Stop polling once we have everything
+            if (allReceived && retryInterval) {
+                clearInterval(retryInterval);
+                retryInterval = null;
+                receiving.set(false);
+                success.set(`✅ All ${totalReceived} parameters loaded`);
+                setTimeout(() => success.set(null), 4000);
+            }
+        }, 2000);
     });
 
-    async function requestParameters() {
+    onDestroy(() => {
+        if (retryInterval) clearInterval(retryInterval);
+    });
+
+    async function requestParameters(silent = false) {
         try {
-            loading.set(true);
+            if (!silent) loading.set(true);
+            receiving.set(true);
             error.set(null);
-            success.set(null);
-            
+            if (!silent) success.set(null);
+
             const response = await fetch('/api/mavlink/request_params', {
                 method: 'POST',
-                headers: {'content-type': 'application/json'},
+                headers: { 'content-type': 'application/json' },
             });
 
             if (!response.ok) throw new Error(await response.text());
+            console.log('📋 PARAM_REQUEST_LIST sent — waiting for FC to stream parameters...');
         } catch (err: any) {
-            error.set(err.message);
+            error.set(`Failed to request parameters: ${err.message}`);
+            receiving.set(false);
         } finally {
             loading.set(false);
         }

@@ -35,9 +35,9 @@
   // Network settings
   let tcpHost = '192.168.1.100';
   let tcpPort = 5760;
-  let udpHost = '192.168.1.100';
-  let udpPort = 14550;
-  let udpBindPort = 14550;
+  let udpHost = '192.168.0.7';     // Updated to correct FC IP
+  let udpPort = 20108;              // Updated to your port
+  let udpBindPort = 8234;
 
   $: darkMode = $darkModeStore;
   $: primaryColor = $primaryColorStore;
@@ -303,6 +303,9 @@
 
           <div class="preset-connections">
             <p class="preset-label">Common Configurations:</p>
+            <button class="preset-btn" on:click={() => { udpHost = '192.168.0.7'; udpPort = 8234; udpBindPort = 14550; }}>
+              Your FC (192.168.0.7:8234)
+            </button>
             <button class="preset-btn" on:click={() => { udpHost = '192.168.1.1'; udpPort = 14550; udpBindPort = 14550; }}>
               WiFi Telemetry (192.168.1.1:14550)
             </button>
