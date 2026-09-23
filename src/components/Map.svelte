@@ -19,24 +19,67 @@
   import { get } from 'svelte/store';
   import Modal from './Modal.svelte';
   import OfflineMapDownloader from './OfflineMapDownloader.svelte';
+  import MapLayerUploader from './MapLayerUploader.svelte';
+  import { formatIndianCoordinates } from '../lib/igrs';
 
   export let hideOverlay: boolean = false;
   export let mavLocation: L.LatLng | { lat: number; lng: number };
   export let id: string | null = null;
+  export let showSwath: boolean = false; // Show camera footprint overlay
   import {
     darkModeStore,
     primaryColorStore,
     secondaryColorStore,
     tertiaryColorStore
   } from '../stores/customizationStore';
+  import SwathDisplay from './SwathDisplay.svelte';
   
   let showOfflineDownloader = false;
+  let showLayerUploader = false;
+  let swathEnabled = false;
 
   let L: typeof import('leaflet');
   let leafletMap: any = get(mapStore);
   let mapType: string = get(mapTypeStore);
   let currentTileLayer = get(mapTileLayerStore);
   let zoom = get(mapZoomStore);
+
+  // Map layer configurations including DSM support
+  const mapLayers = {
+    'OpenStreetMap': {
+      url: '/api/tiles/{z}/{x}/{y}.png',
+      attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors',
+      maxZoom: 20
+    },
+    'Google': {
+      url: '/api/tiles/google/{z}/{x}/{y}.png',
+      attribution: 'Map data &copy; <a href="https://www.google.com/maps">Google Maps</a>',
+      maxZoom: 20
+    },
+    'DSM': {
+      // Defense Series Maps - WMS endpoint
+      // Replace with your actual DSM server URL
+      url: 'https://your-dsm-server.mil/geoserver/wms?',
+      type: 'wms',
+      layers: 'dsm:tactical_map',
+      format: 'image/png',
+      transparent: true,
+      attribution: 'Defense Series Maps',
+      maxZoom: 18
+    },
+    'DSM-Tactical': {
+      // Tactical planning layer
+      url: 'https://your-dsm-server.mil/tiles/tactical/{z}/{x}/{y}.png',
+      attribution: 'DSM Tactical',
+      maxZoom: 18
+    },
+    'DSM-Satellite': {
+      // High-resolution satellite imagery
+      url: 'https://your-dsm-server.mil/tiles/satellite/{z}/{x}/{y}.png',
+      attribution: 'DSM Satellite',
+      maxZoom: 19
+    }
+  };
 
   // Cursor grid reference display
   let cursorLat: number | null = null;
@@ -160,19 +203,10 @@
 
   function initializeLeafletMap(id: string = 'map') {
     leafletMap = L.map(id).setView(mavLocation, zoom);
-    if (mapType.toLowerCase() === 'openstreetmap') {
-      currentTileLayer = L.tileLayer('/api/tiles/{z}/{x}/{y}.png', {
-          minZoom: 0, maxZoom: 20,
-          attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
-        }).addTo(leafletMap);
-      mapType = 'OpenStreetMap';
-    } else {
-      currentTileLayer = L.tileLayer('/api/tiles/google/{z}/{x}/{y}.png', {
-          minZoom: 0, maxZoom: 20,
-          attribution: 'Map data &copy; <a href="https://www.google.com/maps">Google Maps</a>'
-        }).addTo(leafletMap);
-      mapType = 'Satellite';
-    }
+    
+    // Load the appropriate map layer (default to OpenStreetMap if invalid)
+    const layerToLoad = mapType === 'Satellite' ? 'Google' : mapType;
+    currentTileLayer = loadMapLayer(layerToLoad);
     mapTypeStore.set(mapType);
     mapTileLayerStore.set(currentTileLayer);
 
@@ -226,26 +260,54 @@
     mavLocationStore.set(mavLocation);
   }
 
+  function loadMapLayer(layerName: string): any {
+    const layer = mapLayers[layerName as keyof typeof mapLayers] || mapLayers['OpenStreetMap'];
+    
+    if (layer.type === 'wms') {
+      // WMS layer for DSM server - using Leaflet's built-in WMS support
+      return (L.tileLayer as any).wms(layer.url, {
+        layers: layer.layers,
+        format: layer.format,
+        transparent: layer.transparent,
+        attribution: layer.attribution,
+        maxZoom: layer.maxZoom,
+        minZoom: 0,
+        version: '1.1.1',  // WMS version
+        crs: L.CRS.EPSG3857  // Web Mercator projection
+      }).addTo(leafletMap);
+    } else {
+      // Standard XYZ tile layer
+      return L.tileLayer(layer.url, {
+        attribution: layer.attribution,
+        maxZoom: layer.maxZoom,
+        minZoom: 0,
+        tileSize: 256,
+        crossOrigin: true  // Allow CORS for military network tiles
+      }).addTo(leafletMap);
+    }
+  }
+
   function toggleMap() {
     if (currentTileLayer) currentTileLayer.remove();
     const map = document.getElementById('map')!;
-    if (leafletMap && mapType.toLowerCase() === 'openstreetmap') {
-      mapType = 'Satellite';
-      map.classList.remove('dark');
+    
+    // Cycle through map types: OpenStreetMap → Satellite → DSM → DSM-Tactical → DSM-Satellite → OpenStreetMap
+    const mapTypes = ['OpenStreetMap', 'Satellite', 'DSM', 'DSM-Tactical', 'DSM-Satellite'];
+    const currentIndex = mapTypes.indexOf(mapType);
+    const nextIndex = (currentIndex + 1) % mapTypes.length;
+    mapType = mapTypes[nextIndex];
+    
+    // Update map styling
+    map.classList.remove('dark', 'satellite');
+    if (mapType === 'Satellite' || mapType.includes('Satellite')) {
       map.classList.add('satellite');
-      currentTileLayer = L.tileLayer('/api/tiles/google/{z}/{x}/{y}.png', {
-        minZoom: 0, maxZoom: 20,
-        attribution: 'Map data &copy; <a href="https://www.google.com/maps">Google Maps</a>'
-      }).addTo(leafletMap);
-    } else if (leafletMap) {
-      mapType = 'OpenStreetMap';
-      if (darkMode) map.classList.add('dark');
-      map.classList.remove('satellite');
-      currentTileLayer = L.tileLayer('/api/tiles/{z}/{x}/{y}.png', {
-        minZoom: 0, maxZoom: 20,
-        attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
-      }).addTo(leafletMap);
+    } else if (darkMode && mapType === 'OpenStreetMap') {
+      map.classList.add('dark');
     }
+    
+    // Load new layer (map to Google for Satellite)
+    const layerToLoad = mapType === 'Satellite' ? 'Google' : mapType;
+    currentTileLayer = loadMapLayer(layerToLoad);
     mapTypeStore.set(mapType);
     mapTileLayerStore.set(currentTileLayer);
     // @ts-ignore
@@ -502,10 +564,23 @@
     background-color: var(--secondaryColor);
     border: 2px solid var(--primaryColor);
     opacity: 0.95;
+    transition: background-color 0.2s, color 0.2s, opacity 0.2s;
   }
 
   .map-btn:hover {
     opacity: 0.7;
+  }
+
+  .map-btn.active {
+    background-color: #f59e0b;
+    color: #000000;
+    border-color: #d97706;
+    opacity: 1;
+  }
+
+  .map-btn.active:hover {
+    background-color: #d97706;
+    opacity: 1;
   }
   #location-display {
     position: absolute;
@@ -538,20 +613,29 @@
 
 <div class="map-container" style="--primaryColor: {primaryColor}; --secondaryColor: {secondaryColor}; --tertiaryColor: {tertiaryColor}; --fontColor: {fontColor};">
   <div id={id !== null ? id : 'map'} class="relative h-full rounded-2xl z-0"></div>
+  <!-- Right-side map control buttons: top → bottom -->
+  <button class="map-btn absolute top-3 right-2 p-2 px-[14px] rounded-full" on:click={handleFullScreen} title="Fullscreen">
+    <i class="fas fa-expand"></i>
+  </button>
+  <button class="map-btn absolute top-[3.8rem] right-2 p-2 {lockView ? 'px-[15px]' : 'px-[13px]'} rounded-full" on:click={toggleLockView} title={lockView ? 'Unlock View' : 'Lock View'}>
+    <i class="fas {lockView ? 'fa-lock' : 'fa-lock-open'}"></i>
+  </button>
+  <button class="map-btn absolute top-[6.6rem] right-2 p-2 px-[13px] rounded-full" on:click={() => showOfflineDownloader = true} title="Download Offline Maps">
+    <i class="fas fa-download"></i>
+  </button>
+  <!-- Camera Footprint toggle -->
+  <button
+    class="map-btn absolute top-[9.4rem] right-2 p-2 px-[13px] rounded-full"
+    class:active={swathEnabled}
+    on:click={() => swathEnabled = !swathEnabled}
+    title={swathEnabled ? 'Hide Camera Footprint' : 'Show Camera Footprint'}>
+    <i class="fas fa-camera"></i>
+  </button>
   {#if downloadedCenter && downloadedRadius}
-    <button class="map-btn absolute top-[9.4rem] right-2 text-[#ffffff] bg-opacity-75 p-2 px-[13px] rounded-full" on:click={clearDownloadedArea} title="Hide Downloaded Area"> 
+    <button class="map-btn absolute top-[12.2rem] right-2 p-2 px-[13px] rounded-full" on:click={clearDownloadedArea} title="Hide Downloaded Area">
       <i class="fas fa-eye-slash"></i>
     </button>
   {/if}
-  <button class="map-btn absolute top-[6.6rem] right-2 text-[#ffffff] bg-opacity-75 p-2 px-[13px] rounded-full" on:click={() => showOfflineDownloader = true} title="Download Offline Maps"> 
-    <i class="fas fa-download"></i>
-  </button>
-  <button class="map-btn absolute top-[3.8rem] right-2 text-[#ffffff] bg-opacity-75 p-2 {lockView ? 'px-[15px]' : 'px-[13px]'} rounded-full" on:click={toggleLockView}> 
-    <i class="fas {lockView ? 'fa-lock' : 'fa-lock-open'}"></i>
-  </button>
-  <button class="map-btn absolute top-3 right-2 text-[#ffffff] bg-opacity-75 p-2 px-[14px] rounded-full" on:click={handleFullScreen}>
-    <i class="fas fa-expand"></i>
-  </button>
   <label id="map-toggle" class="flex justify-center cursor-pointer my-2 absolute top-1 right-2 left-2 w-fit m-auto rounded-3xl p-2 pl-3 text-sm items-center" style={!hideOverlay ? 'display: flex;' : 'display: none;'}>
     <input type="checkbox" value="" class="sr-only peer" on:click={toggleMap}>
     <span class="text-white flex items-center gap-2">
@@ -575,4 +659,9 @@
 <OfflineMapDownloader 
   bind:isOpen={showOfflineDownloader} 
   onDownloadComplete={(center, radius) => showDownloadedArea(center, radius)}
+/>
+
+<SwathDisplay 
+  bind:enabled={swathEnabled}
+  showInfo={true}
 />

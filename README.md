@@ -5,7 +5,8 @@ A modern, feature-rich Ground Control Station built with SvelteKit for MAVLink-b
 ## Features
 
 - 🎮 **Real-time Control** - Direct MAVLink communication for live telemetry and control
-- 🗺️ **Dual Map Views** - OpenStreetMap and Google Satellite imagery
+- 🗺️ **Multiple Map Layers** - OpenStreetMap, Google Satellite, and **Defense Series Maps (DSM)**
+- 🛡️ **Military-Grade Mapping** - Full DSM support for tactical planning and operations
 - 📡 **Offline Maps** - Pre-download tiles for operation without internet connectivity
 - 🎯 **Mission Planning** - Create and manage waypoint-based missions
 - 📹 **Live Video Feed** - Real-time video streaming from drone camera
@@ -83,6 +84,8 @@ Use the plug icon in the sidebar to connect to your MAVLink device via USB/Seria
 
 ## Documentation
 
+- [**DSM Configuration Guide**](./DSM_CONFIG.md) - Setup Defense Series Maps
+- [**DSM Quick Start**](./DSM_QUICK_START.md) - Fast setup for DSM layers
 - [Offline Maps Guide](./docs/OFFLINE_MAPS_GUIDE.md) - Detailed offline maps documentation
 - [Quick Start Guide](./QUICK_START.md) - Getting started with the GCS
 - [Software Requirements Specification](./docs/SRS_ISO12207_Sidak_GCS.md) - ISO 12207 SRS

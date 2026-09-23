@@ -25,6 +25,38 @@
   import Notification from './Notification.svelte';
   import type { LatLng } from 'leaflet';
 
+  // ── Flight Time ───────────────────────────────────────────────────────────
+  let flightStartTime: number | null = null;
+  let flightElapsedSec = 0;
+  let flightTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+  function formatFlightTime(secs: number): string {
+    const h = Math.floor(secs / 3600).toString().padStart(2, '0');
+    const m = Math.floor((secs % 3600) / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  }
+
+  // Start timer on arm, stop on disarm
+  $: if ($mavArmedStateStore && !flightStartTime) {
+    flightStartTime = Date.now();
+    flightTimerInterval = setInterval(() => {
+      flightElapsedSec = Math.floor((Date.now() - flightStartTime!) / 1000);
+    }, 1000);
+  } else if (!$mavArmedStateStore && flightStartTime) {
+    if (flightTimerInterval) { clearInterval(flightTimerInterval); flightTimerInterval = null; }
+    flightStartTime = null;
+  }
+
+  // Estimate remaining flight time from battery consumption rate
+  function estimateRemainingTime(battery: number | null, elapsedSec: number): string {
+    if (battery === null || battery <= 0 || elapsedSec < 30) return '--:--:--';
+    const consumed = 100 - battery;
+    if (consumed <= 0) return '--:--:--';
+    const secPerPercent = elapsedSec / consumed;
+    return formatFlightTime(Math.floor(battery * secPerPercent));
+  }
+
   export let mavModel: string = get(mavModelStore);
   export let mavType: string = get(mavTypeStore);
   export let isArmed: boolean = get(mavArmedStateStore)
@@ -258,9 +290,10 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('FIXED_MAG_CAL_YAW', `${[isNaN(parseInt(modal.inputValues![0])) ? 0 : modal.inputValues![0], 0, mavLocation.lat, mavLocation.lng]}`);
+          const heading = isNaN(parseInt(modal.inputValues![0])) ? 0 : modal.inputValues![0];
+          await sendMavlinkCommand('FIXED_MAG_CAL_YAW', `${heading},0,${mavLocation.lat},${mavLocation.lng}`, 'true');
           await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
-          await sendMavlinkCommand('PREFLIGHT_CALIBRATION', `${[0, 0, 0, 0, 4, 0, 0, 0]}`);
+          await sendMavlinkCommand('PREFLIGHT_CALIBRATION', '0,0,0,0,4,0,0', 'true');
           modal.$destroy();
         }
       }
@@ -277,7 +310,7 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', `${[1, 6]}`, 'true'); // 6 is RTL: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
+          await sendMavlinkCommand('DO_SET_MODE', '1,6', 'true'); // 6 is RTL
           modal.$destroy();
           const notification = new Notification({
             target: document.body,
@@ -303,7 +336,7 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
+          await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true'); // 4 is GUIDED
           modal.$destroy();
           const notification = new Notification({
             target: document.body,
@@ -342,12 +375,14 @@
           await writeParameter('RTL_ALT', parseInt(modal.inputValues![0]) * 100, get(mavlinkParamStore).RTL_ALT.param_type);
           await writeParameter('RTL_CLIMB_MIN', 0, get(mavlinkParamStore).RTL_CLIMB_MIN.param_type);
           if (get(mavStateStore) === 'STANDBY') {
-            await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 bypasses pre-arm checks (RC, GPS, etc.)
-            await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, 'true');
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true'); // 4 is GUIDED
+            await new Promise(resolve => setTimeout(resolve, 300));
+            await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await sendMavlinkCommand('NAV_TAKEOFF', '0,0,0,0,0,0,10', 'true');
             await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
           }
-          await sendMavlinkCommand('DO_SET_MODE', `${[1, 3]}`, 'true'); // 3 is AUTO Mode: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
+          await sendMavlinkCommand('DO_SET_MODE', '1,3', 'true'); // 3 is AUTO Mode
           modal.$destroy();
           const notification = new Notification({
             target: document.body,
@@ -373,10 +408,13 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          if (mavMode !== 'GUIDED') await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // param2: 4 (GUIDED) see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-          await sendMavlinkCommand('DO_SET_SERVO' , `${[9, 1050]}`); // param2 - 1900: release, 1100: grip
-          await new Promise((resolve) => setTimeout(resolve, 500)); // Wait 0.5 seconds
-          await sendMavlinkCommand('DO_SET_SERVO' , `${[9, 1950]}`); // param2 - 1900: release, 1100: grip
+          if (mavMode !== 'GUIDED') {
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          await sendMavlinkCommand('DO_SET_SERVO', '9,1050', 'true'); // Release servo
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          await sendMavlinkCommand('DO_SET_SERVO', '9,1950', 'true'); // Open servo
           modal.$destroy();
         },
       }
@@ -400,9 +438,14 @@
           }
         ],
         onConfirm: async () => {
-          if (mavMode !== 'GUIDED') await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // param2: 4 (GUIDED) see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-          await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 bypasses pre-arm checks (RC, GPS, etc.)
-          await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, parseInt(modal.inputValues![0])]}`, 'true');
+          if (mavMode !== 'GUIDED') {
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+          await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          await sendMavlinkCommand('NAV_TAKEOFF', `0,0,0,0,0,0,${parseInt(modal.inputValues![0])}`, 'true');
+          modal.$destroy();
         },
       }
     });
@@ -418,8 +461,8 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // param2: 4 (GUIDED) see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-          await sendMavlinkCommand('NAV_LAND', `${[0, 0, 0, 0, mavLocation.lat, mavLocation.lng, 0]}`, 'true');
+          await sendMavlinkCommand('DO_SET_MODE', '1,9', 'true'); // 9 is LAND mode
+          modal.$destroy();
         },
       }
     });
@@ -451,7 +494,8 @@
 
   async function setFlightMode(modeNum: number) {
     modeDropdownOpen = false;
-    await sendMavlinkCommand('DO_SET_MODE', `${[1, modeNum]}`, 'true');
+    await sendMavlinkCommand('DO_SET_MODE', `1,${modeNum}`, 'true');
+    console.log(`Flight mode set to ${modeNum}`);
   }
 
   // ARM / DISARM — 2-click confirm to prevent accidents
@@ -468,8 +512,9 @@
     armConfirmStep = false;
     if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
     // Switch to GUIDED first so FC accepts the ARM without needing RC input
-    await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-    await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true');
+    await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
   }
 
   async function disarmVehicle() {
@@ -481,7 +526,7 @@
     }
     armConfirmStep = false;
     if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
-    await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[0, 21196]}`, 'true');
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '0,21196', 'true');
   }
 </script>
 
@@ -503,6 +548,16 @@
       <div>Speed: {speed} m/s</div>
       <div>Altitude: {altitude} m</div>
       <div class="battery-status {batteryStatus === null ? 'red' : ''} {batteryStatus !== null && batteryStatus < 20 ? 'red' : batteryStatus !== null && batteryStatus < 50 ? 'yellow' : 'green'}">Battery Status: {batteryStatus !== null ? batteryStatus : '--'}%</div>
+      <div class="flight-time-display col-span-2 grid grid-cols-2 gap-2 mt-1 p-2 rounded-lg">
+        <div class="flight-time-item">
+          <span class="ft-label"><i class="fas fa-stopwatch"></i> Flight Time</span>
+          <span class="ft-value {flightStartTime ? 'active' : ''}">{formatFlightTime(flightElapsedSec)}</span>
+        </div>
+        <div class="flight-time-item">
+          <span class="ft-label"><i class="fas fa-battery-half"></i> Est. Remaining</span>
+          <span class="ft-value">{estimateRemainingTime(batteryStatus, flightElapsedSec)}</span>
+        </div>
+      </div>
       <div class="relative flex items-center gap-1">
         <span>Mode:</span>
         <div class="mode-dropdown relative">
@@ -661,6 +716,43 @@
   }
   .battery-status.red {
     color: red;
+  }
+
+  .flight-time-display {
+    background-color: var(--secondaryColor);
+    border: 1px solid var(--tertiaryColor);
+    border-radius: 0.5rem;
+  }
+
+  .flight-time-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .ft-label {
+    font-size: 0.65rem;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .ft-value {
+    font-size: 0.9rem;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    color: #66e1ff;
+  }
+
+  .ft-value.active {
+    color: #00ff88;
+    animation: ft-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes ft-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
   }
 
   .button-container {

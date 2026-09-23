@@ -704,7 +704,10 @@ function _attachReaderUDP(): void {
             // cmd 511 = SET_MESSAGE_INTERVAL, cmd 66 = REQUEST_DATA_STREAM
             const cmdNames: Record<number, string> = { 511:'SET_MESSAGE_INTERVAL', 66:'REQUEST_DATA_STREAM', 400:'COMPONENT_ARM_DISARM', 176:'DO_SET_MODE' };
             const cmdStr = cmdNames[ackCmd] ?? `CMD_${ackCmd}`;
-            console.log(`📨 COMMAND_ACK: ${cmdStr} → ${resultStr}`);
+            // Only log non-stream-request ACKs (SET_MESSAGE_INTERVAL responses are just noise)
+            if (ackCmd !== 511) {
+                console.log(`📨 COMMAND_ACK: ${cmdStr} → ${resultStr}`);
+            }
         }
 
         // Track param receive progress
@@ -753,6 +756,7 @@ async function _requestAllDataStreams(): Promise<void> {
     ];
 
     console.log('📡 Requesting telemetry streams via SET_MESSAGE_INTERVAL...');
+    let successCount = 0;
     for (const { msgId, intervalUs, name } of messages) {
         try {
             const cmd = new common.CommandLong();
@@ -767,6 +771,7 @@ async function _requestAllDataStreams(): Promise<void> {
             (cmd as any)._param6 = 0;
             (cmd as any)._param7 = 0;
             await _send(cmd);
+            successCount++;
             await new Promise(r => setTimeout(r, 30));
         } catch (err) {
             console.warn(`⚠️ SET_MESSAGE_INTERVAL failed for ${name} (${msgId}):`, (err as Error).message);
@@ -784,7 +789,7 @@ async function _requestAllDataStreams(): Promise<void> {
         await _send(ds);
     } catch { /* older firmware may not support it — ignore */ }
 
-    console.log('✅ All data stream requests sent — telemetry should begin flowing');
+    console.log(`✅ Sent ${successCount} stream requests — telemetry should begin flowing`);
 }
 
 function _attachListeners(): void {

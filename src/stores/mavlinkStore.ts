@@ -30,6 +30,8 @@ export const mavSatelliteStore = writable<{ total: number; hdop: number }>({ tot
 export const mavHeadingStore = writable<number>(320);
 export const mavAltitudeStore = writable<number>(0);
 export const mavSpeedStore = writable<number>(0);
+export const mavPitchStore = writable<number>(0);    // degrees, positive = nose up
+export const mavRollStore = writable<number>(0);     // degrees, positive = right wing down
 export const mavBatteryStore = writable<number|null>(null);
 export const mavlinkLogStore = writable<string[]>([]);
 export const mavlinkParamStore = writable<{[key: string]: Parameter}>({});
@@ -38,6 +40,19 @@ export const mavlinkParamStore = writable<{[key: string]: Parameter}>({});
 export const mavGimbalTiltStore  = writable<number>(0);   // degrees, -90 (down) to 0 (forward)
 export const mavGimbalPanStore   = writable<number>(0);   // degrees, -180 to 180
 export const mavGimbalZoomStore  = writable<number>(1.0); // zoom multiplier 1x–10x
+
+// Combined gimbal store for easier consumption
+export const mavGimbalStore = writable<{
+  pitch: number;
+  roll: number;
+  yaw: number;
+  zoom: number;
+}>({
+  pitch: 0,
+  roll: 0,
+  yaw: 0,
+  zoom: 1.0
+});
 
 // Pending arm state — set when a command is sent, cleared by COMMAND_ACK
 // While set, heartbeat updates to mavArmedStateStore are blocked

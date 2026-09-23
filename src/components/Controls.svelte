@@ -43,6 +43,30 @@
     }
   }
   
+  async function setMaxSpeed(speed: number) {
+    // DO_CHANGE_SPEED command
+    // param1: Speed type (0=Airspeed, 1=Ground Speed, 2=Climb Speed, 3=Descent Speed)
+    // param2: Speed in m/s
+    // param3: Throttle as percentage (use -1 for no change)
+    await sendMavlinkCommand('DO_CHANGE_SPEED', `1,${speed},-1`, 'true');
+    console.log(`Max speed set to ${speed} m/s`);
+  }
+
+  async function goToAltitude(targetAltitude: number) {
+    // First ensure we're in GUIDED mode
+    if (mavMode !== 'GUIDED') {
+      await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+      await new Promise(resolve => setTimeout(resolve, 500)); // Wait for mode change
+    }
+    
+    // Use MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT (30)
+    // This changes altitude while maintaining current position
+    // param1: Action (0=hold, 1=continue mission, 2=pause)
+    // param7: Target altitude in meters (relative to home)
+    await sendMavlinkCommand('CONTINUE_AND_CHANGE_ALT', `0,0,0,0,0,0,${targetAltitude}`, 'true');
+    console.log(`Going to altitude: ${targetAltitude} m`);
+  }
+  
   async function setPositionLocal(x: string, y: string, z: string) {
     const response = await fetch("/api/mavlink/set_position_local", {
       method: "POST",
@@ -107,9 +131,19 @@
           <input type="number" min="0" max="100" class="form-input" placeholder="100 m" bind:value={altitudeSetPoint} />
         </div>
         <button class="set-btn text-[8pt] rounded-full py-1 px-3 mt-2"
-          on:click|preventDefault={() => {
-            if (!isNaN(parseInt(maxSpeed))) sendMavlinkCommand('DO_CHANGE_SPEED', `${[1, maxSpeed]}`);
-            if (!isNaN(parseInt(altitudeSetPoint))) setPositionLocal('0', '0', `-${altitudeSetPoint}`);
+          on:click|preventDefault={async () => {
+            const speed = parseFloat(maxSpeed);
+            const altitude = parseFloat(altitudeSetPoint);
+            
+            if (!isNaN(speed) && speed > 0) {
+              await setMaxSpeed(speed);
+              maxSpeed = ''; // Clear input after sending
+            }
+            
+            if (!isNaN(altitude) && altitude > 0) {
+              await goToAltitude(altitude);
+              altitudeSetPoint = ''; // Clear input after sending
+            }
           }}>
           Set
         </button>
@@ -119,20 +153,28 @@
     <div class="alt-btns column flex flex-col items-center justify-center text-center space-y-4">
       <div class="flex flex-col items-center">
         <div class="label text-sm mb-1" title="Altitude Up">Altitude Up</div>
-        <button class="alt-button rounded-full" on:click={() => {
-          if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-          setPositionLocal('0', '0', `-${altitude + 10}`)
+        <button class="alt-button rounded-full" on:click={async () => {
+          if (mavMode !== 'GUIDED') {
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          const newAltitude = altitude + 10;
+          await goToAltitude(newAltitude);
         }}>
           <i class="alt-up fas fa-arrow-up"></i>
         </button>
       </div>
       <div class="flex flex-col items-center justify-center">
         <div class="label text-sm mb-1" title="Altitude Down">Altitude Down</div>
-        <button class="alt-button rounded-full" on:click={() => {
-            if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-            setPositionLocal('0', '0', `-${altitude - 10}`)
-          }}>
-            <i class="alt-down fas fa-arrow-down"></i>
+        <button class="alt-button rounded-full" on:click={async () => {
+          if (mavMode !== 'GUIDED') {
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          const newAltitude = Math.max(0, altitude - 10); // Don't go below 0
+          await goToAltitude(newAltitude);
+        }}>
+          <i class="alt-down fas fa-arrow-down"></i>
         </button>
       </div>
     </div>
@@ -141,20 +183,28 @@
       <div id="rotate-left-button" class="flex flex-col items-center">
         <div class="label text-sm mb-1">Rotate Left</div>
         <button class="rotate-button rotate-left rounded-full"
-          on:click={() => {
-              if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-              sendMavlinkCommand('CONDITION_YAW', `${[10, 10, -1, 1]}`);
-            }}>
+          on:click={async () => {
+            if (mavMode !== 'GUIDED') {
+              await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            // CONDITION_YAW: angle, speed, direction(-1=CCW, 1=CW), relative(0=absolute, 1=relative)
+            await sendMavlinkCommand('CONDITION_YAW', '45,10,-1,1', 'true');
+          }}>
           <i class="fas fa-rotate-left"></i>
         </button>
       </div>
       <div class="flex flex-col items-center">
         <div class="label text-sm mb-1">Rotate Right</div>
         <button class="rotate-button rotate-right rounded-full"
-          on:click={() => {
-              if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-              sendMavlinkCommand('CONDITION_YAW', `${[10, 10, 1, 1]}`);
-            }}>
+          on:click={async () => {
+            if (mavMode !== 'GUIDED') {
+              await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            // CONDITION_YAW: angle, speed, direction(-1=CCW, 1=CW), relative(0=absolute, 1=relative)
+            await sendMavlinkCommand('CONDITION_YAW', '45,10,1,1', 'true');
+          }}>
           <i class="fas fa-rotate-right"></i>
         </button>
       </div>

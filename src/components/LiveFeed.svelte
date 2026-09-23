@@ -14,7 +14,9 @@
     mavHeadingStore,
     mavGimbalTiltStore,
     mavGimbalPanStore,
-    mavGimbalZoomStore
+    mavGimbalZoomStore,
+    mavPitchStore,
+    mavRollStore
   } from '../stores/mavlinkStore';
 
   // Video feed URL built from .env variables (VITE_ prefix = exposed to client)
@@ -37,6 +39,8 @@
   $: gimbalTilt    = $mavGimbalTiltStore;
   $: gimbalPan     = $mavGimbalPanStore;
   $: gimbalZoom    = $mavGimbalZoomStore;
+  $: pitch         = $mavPitchStore;
+  $: roll          = $mavRollStore;
 
   // Format lat/lng to grid reference style (degrees + decimal minutes)
   function toGridRef(lat: number, lng: number): string {
@@ -57,20 +61,51 @@
   }
 
   // ── Recording ────────────────────────────────────────────────────────────────
-  // The stream is cross-origin (MediaMTX, port configured via VITE_VIDEO_PORT in .env),
-  // so captureStream() on the iframe is blocked by the browser's same-origin policy.
-  // which lets the user pick the browser tab/window to record.
   let isRecording   = false;
   let mediaRecorder: MediaRecorder | null = null;
   let recordedChunks: Blob[] = [];
   let recordingDuration = 0;
   let recordingTimer: ReturnType<typeof setInterval> | null = null;
 
+  // SRT telemetry log — one entry per second while recording
+  interface SrtEntry {
+    index: number;
+    startSec: number;
+    lat: number; lng: number;
+    alt: number; heading: number;
+    tilt: number; pan: number; zoom: number;
+  }
+  let srtEntries: SrtEntry[] = [];
+
   function formatDuration(s: number) {
     const h = Math.floor(s / 3600).toString().padStart(2, '0');
     const m = Math.floor((s % 3600) / 60).toString().padStart(2, '0');
     const sec = (s % 60).toString().padStart(2, '0');
     return `${h}:${m}:${sec}`;
+  }
+
+  // Format a time as SRT timestamp: HH:MM:SS,mmm
+  function srtTimestamp(totalSec: number): string {
+    const h   = Math.floor(totalSec / 3600).toString().padStart(2, '0');
+    const m   = Math.floor((totalSec % 3600) / 60).toString().padStart(2, '0');
+    const s   = Math.floor(totalSec % 60).toString().padStart(2, '0');
+    return `${h}:${m}:${s},000`;
+  }
+
+  function buildSrtContent(entries: SrtEntry[]): string {
+    return entries.map(e => {
+      const start = srtTimestamp(e.startSec);
+      const end   = srtTimestamp(e.startSec + 1);
+      const lat   = e.lat.toFixed(6);
+      const lng   = e.lng.toFixed(6);
+      return [
+        e.index,
+        `${start} --> ${end}`,
+        `LAT:${lat} LNG:${lng} ALT:${e.alt.toFixed(1)}m`,
+        `HDG:${e.heading.toFixed(1)}° TILT:${e.tilt.toFixed(1)}° PAN:${e.pan.toFixed(1)}° ZOOM:${e.zoom.toFixed(1)}x`,
+        ''
+      ].join('\n');
+    }).join('\n');
   }
 
   async function startRecording() {
@@ -97,7 +132,22 @@
       mediaRecorder.start(1000);
       isRecording = true;
       recordingDuration = 0;
-      recordingTimer = setInterval(() => { recordingDuration += 1; }, 1000);
+      srtEntries = [];
+      recordingTimer = setInterval(() => {
+        recordingDuration += 1;
+        // Capture one telemetry frame per second for SRT
+        srtEntries.push({
+          index:    recordingDuration,
+          startSec: recordingDuration - 1,
+          lat:      typeof mavLocation.lat === 'function' ? (mavLocation as any).lat() : mavLocation.lat,
+          lng:      typeof mavLocation.lng === 'function' ? (mavLocation as any).lng() : mavLocation.lng,
+          alt:      altitude,
+          heading:  heading,
+          tilt:     gimbalTilt,
+          pan:      gimbalPan,
+          zoom:     gimbalZoom
+        });
+      }, 1000);
     } catch (err: any) {
       if (err.name !== 'NotAllowedError') {
         showError(`Failed to start recording: ${err.message}`);
@@ -117,15 +167,31 @@
 
   function saveRecording() {
     if (recordedChunks.length === 0) return;
+    const ts   = new Date().toISOString().replace(/[:.]/g, '-');
+
+    // Save video file
     const blob = new Blob(recordedChunks, { type: recordedChunks[0].type });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    const ts   = new Date().toISOString().replace(/[:.]/g, '-');
     a.href     = url;
     a.download = `gcs-recording-${ts}.webm`;
     a.click();
     URL.revokeObjectURL(url);
+
+    // Save SRT telemetry subtitle file
+    if (srtEntries.length > 0) {
+      const srtContent = buildSrtContent(srtEntries);
+      const srtBlob    = new Blob([srtContent], { type: 'text/plain' });
+      const srtUrl     = URL.createObjectURL(srtBlob);
+      const srtA       = document.createElement('a');
+      srtA.href        = srtUrl;
+      srtA.download    = `gcs-recording-${ts}.srt`;
+      srtA.click();
+      URL.revokeObjectURL(srtUrl);
+    }
+
     recordedChunks = [];
+    srtEntries = [];
   }
 
   // ── Photo capture ─────────────────────────────────────────────────────────────
@@ -176,6 +242,86 @@
     ];
     lines.forEach((line, i) => ctx.fillText(line, 14, 30 + i * (h * 0.024)));
     ctx.restore();
+  }
+
+  // ── Gimbal quick controls ─────────────────────────────────────────────────────
+  let showGimbalControls = false;
+  // Camera mode toggle: 'photo' | 'video'
+  let cameraMode: 'photo' | 'video' = 'video';
+
+  async function sendGimbal(pitchDelta: number, yawDelta: number) {
+    const newPitch = Math.max(-90, Math.min(90, gimbalTilt + pitchDelta));
+    // Pan wraps around full 360°
+    const newYaw   = ((gimbalPan + yawDelta) % 360 + 360) % 360;
+    await fetch('/api/mavlink/send_command', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'command': 'DO_MOUNT_CONTROL',
+        'params': `${newPitch},0,${newYaw},0,0,0,2`,
+        'useCmdLong': 'true'
+      }
+    });
+  }
+
+  async function centerGimbal() {
+    await fetch('/api/mavlink/send_command', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'command': 'DO_MOUNT_CONTROL',
+        'params': '0,0,0,0,0,0,2',
+        'useCmdLong': 'true'
+      }
+    });
+  }
+
+  async function tiltDown90() {
+    await fetch('/api/mavlink/send_command', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'command': 'DO_MOUNT_CONTROL',
+        'params': `-90,0,${gimbalPan},0,0,0,2`,
+        'useCmdLong': 'true'
+      }
+    });
+  }
+
+  async function adjustZoom(delta: number) {
+    const newZoom = Math.max(1, Math.min(30, gimbalZoom + delta));
+    await fetch('/api/mavlink/send_command', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'command': 'SET_CAMERA_ZOOM',
+        'params': `2,${newZoom},0,0,0,0,0`,
+        'useCmdLong': 'true'
+      }
+    });
+  }
+
+  // RPV altitude adjustment (±5m steps)
+  async function adjustAltitude(delta: number) {
+    const newAlt = Math.max(0, altitude + delta);
+    await fetch('/api/mavlink/send_command', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'command': 'CONTINUE_AND_CHANGE_ALT',
+        'params': `0,0,0,0,0,0,${newAlt}`,
+        'useCmdLong': 'true'
+      }
+    });
+  }
+
+  // Trigger camera action based on current mode
+  function triggerCameraAction() {
+    if (cameraMode === 'photo') {
+      capturePhoto();
+    } else {
+      if (isRecording) stopRecording(); else startRecording();
+    }
   }
 
   // ── Fullscreen / rotate ────────────────────────────────────────────────────────
@@ -274,6 +420,107 @@
           <span class="rec-dot">●</span> REC {formatDuration(recordingDuration)}
         </div>
       {/if}
+
+      <!-- Bottom-right: Artificial Horizon + Gimbal controls -->
+      <div class="osd-br-panel">
+        <!-- Artificial Horizon (mini) -->
+        <div class="mini-horizon" title="Attitude: Pitch {pitch.toFixed(1)}° Roll {roll.toFixed(1)}°">
+          <div class="horizon-clip">
+            <div class="horizon-rotate" style="transform: rotate({roll}deg);">
+              <div class="horizon-translate" style="transform: translateY({pitch * 3.0}px);">
+                <div class="h-sky"></div>
+                <div class="h-line"></div>
+                <div class="h-ground"></div>
+              </div>
+            </div>
+            <!-- Fixed aircraft symbol -->
+            <div class="h-aircraft">
+              <div class="h-wing h-wing-l"></div>
+              <div class="h-dot"></div>
+              <div class="h-wing h-wing-r"></div>
+            </div>
+          </div>
+          <div class="h-labels">
+            <span>P {pitch.toFixed(1)}°</span>
+            <span>R {roll.toFixed(1)}°</span>
+          </div>
+        </div>
+
+        <!-- Gimbal joystick toggle -->
+        <button class="gimbal-toggle-btn" on:click={() => showGimbalControls = !showGimbalControls}
+          title={showGimbalControls ? 'Hide Gimbal Controls' : 'Show Gimbal Controls'}>
+          <i class="fas fa-camera-rotate"></i>
+          <span>{showGimbalControls ? 'Hide' : 'Gimbal'}</span>
+        </button>
+
+        <!-- Gimbal d-pad (shown when toggle is on) -->
+        {#if showGimbalControls}
+          <div class="gimbal-dpad">
+            <!-- Status row -->
+            <div class="dpad-info">
+              <span title="Tilt">↕ {gimbalTilt.toFixed(0)}°</span>
+              <span title="Pan">↔ {((gimbalPan % 360 + 360) % 360).toFixed(0)}°</span>
+              <span title="Zoom">🔍 {gimbalZoom.toFixed(1)}x</span>
+            </div>
+
+            <!-- Pan / Tilt d-pad -->
+            <div class="dpad-grid">
+              <!-- Tilt up -->
+              <button class="dpad-btn" on:click={() => adjustZoom(-1)} title="Zoom Out">
+                <i class="fas fa-search-minus"></i>
+              </button>
+              <button class="dpad-btn" on:click={() => sendGimbal(5, 0)} title="Tilt Up +5°">
+                <i class="fas fa-chevron-up"></i>
+              </button>
+              <button class="dpad-btn" on:click={() => adjustZoom(1)} title="Zoom In">
+                <i class="fas fa-search-plus"></i>
+              </button>
+              <!-- Pan left / Center / Pan right -->
+              <button class="dpad-btn" on:click={() => sendGimbal(0, -15)} title="Pan Left 15°">
+                <i class="fas fa-chevron-left"></i>
+              </button>
+              <button class="dpad-btn dpad-center" on:click={centerGimbal} title="Center Gimbal">
+                <i class="fas fa-dot-circle"></i>
+              </button>
+              <button class="dpad-btn" on:click={() => sendGimbal(0, 15)} title="Pan Right 15°">
+                <i class="fas fa-chevron-right"></i>
+              </button>
+              <!-- Tilt down / Look-down / Alt down -->
+              <button class="dpad-btn dpad-alt-up" on:click={() => adjustAltitude(5)} title="Altitude +5m">
+                <i class="fas fa-arrow-up"></i>
+              </button>
+              <button class="dpad-btn" on:click={() => sendGimbal(-5, 0)} title="Tilt Down -5°">
+                <i class="fas fa-chevron-down"></i>
+              </button>
+              <button class="dpad-btn dpad-alt-down" on:click={() => adjustAltitude(-5)} title="Altitude -5m">
+                <i class="fas fa-arrow-down"></i>
+              </button>
+            </div>
+
+            <!-- Quick actions row -->
+            <div class="dpad-quick">
+              <button class="dpad-quick-btn" on:click={tiltDown90} title="Look Straight Down">
+                <i class="fas fa-arrows-down-to-line"></i> Nadir
+              </button>
+              <button class="dpad-quick-btn" on:click={() => sendGimbal(0, 90)} title="Pan Right 90°">
+                <i class="fas fa-arrow-rotate-right"></i> +90°
+              </button>
+              <button class="dpad-quick-btn" on:click={() => sendGimbal(0, -90)} title="Pan Left 90°">
+                <i class="fas fa-arrow-rotate-left"></i> -90°
+              </button>
+              <button class="dpad-quick-btn" on:click={() => sendGimbal(0, 180)} title="Pan 180° (Rear)">
+                <i class="fas fa-redo"></i> 180°
+              </button>
+            </div>
+
+            <!-- Altitude display -->
+            <div class="dpad-alt-display">
+              <i class="fas fa-mountain"></i>
+              ALT: <strong>{altitude.toFixed(1)} m</strong>
+            </div>
+          </div>
+        {/if}
+      </div>
     </div>
 
     <!-- ── Live badge ── -->
@@ -286,13 +533,24 @@
 
     <!-- ── Controls toolbar ── -->
     <div class="toolbar absolute top-2 right-2 flex gap-1 z-40">
-      <!-- Photo capture -->
-      <button class="tb-btn" title="Capture Photo" on:click={capturePhoto}>
-        <i class="fas fa-camera"></i>
+
+      <!-- Camera mode toggle: Photo ↔ Video -->
+      <button
+        class="tb-btn tb-mode-toggle"
+        class:tb-mode-photo={cameraMode === 'photo'}
+        class:tb-mode-video={cameraMode === 'video'}
+        title="Toggle Photo / Video mode (currently: {cameraMode})"
+        on:click={() => cameraMode = cameraMode === 'photo' ? 'video' : 'photo'}
+      >
+        <i class="fas {cameraMode === 'photo' ? 'fa-image' : 'fa-film'}"></i>
       </button>
 
-      <!-- Record toggle -->
-      {#if isRecording}
+      <!-- Single action button: fires capturePhoto or start/stopRecording based on mode -->
+      {#if cameraMode === 'photo'}
+        <button class="tb-btn" title="Capture Photo" on:click={capturePhoto}>
+          <i class="fas fa-camera"></i>
+        </button>
+      {:else if isRecording}
         <button class="tb-btn tb-btn-rec" title="Stop Recording" on:click={stopRecording}>
           <i class="fas fa-stop-circle"></i>
         </button>
@@ -435,6 +693,22 @@
     background-color: rgba(220, 38, 38, 0.6);
   }
 
+  /* Camera mode toggle button */
+  .tb-mode-toggle {
+    font-weight: 700;
+    border: 2px solid rgba(255,255,255,0.3);
+  }
+
+  .tb-mode-photo {
+    background-color: rgba(234, 179, 8, 0.6);  /* amber = photo */
+    color: #fff;
+  }
+
+  .tb-mode-video {
+    background-color: rgba(220, 38, 38, 0.5);  /* red = video */
+    color: #fff;
+  }
+
   .tab {
     border: 2px solid #3d393980;
   }
@@ -450,5 +724,247 @@
   @media (max-width: 990px) {
     #live-feed-container { height: 300px; }
     .osd-block { font-size: 0.6rem; min-width: unset; }
+  }
+
+  /* ── Bottom-right OSD panel ── */
+  .osd-br-panel {
+    position: absolute;
+    bottom: 2.4rem;
+    right: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    z-index: 35;
+    pointer-events: all;
+  }
+
+  /* ── Mini Artificial Horizon ── */
+  .mini-horizon {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .horizon-clip {
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 2px solid rgba(255,255,255,0.4);
+    position: relative;
+    box-shadow: 0 0 8px rgba(0,0,0,0.6);
+  }
+
+  .horizon-rotate {
+    position: absolute;
+    width: 300%;
+    height: 300%;
+    top: -100%;
+    left: -100%;
+    transition: transform 0.25s ease-out;
+  }
+
+  .horizon-translate {
+    width: 100%;
+    height: 100%;
+    transition: transform 0.25s ease-out;
+  }
+
+  .h-sky {
+    position: absolute;
+    width: 100%;
+    height: 50%;
+    top: 0;
+    background: linear-gradient(to bottom, #1a6fbf, #5aabff);
+  }
+
+  .h-ground {
+    position: absolute;
+    width: 100%;
+    height: 50%;
+    bottom: 0;
+    background: linear-gradient(to bottom, #7a3a10, #4a2008);
+  }
+
+  .h-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: white;
+    transform: translateY(-50%);
+    box-shadow: 0 0 4px rgba(255,255,255,0.8);
+  }
+
+  .h-aircraft {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    z-index: 5;
+  }
+
+  .h-wing {
+    width: 48px;
+    height: 5px;
+    background: #ffcc00;
+    box-shadow: 0 0 4px rgba(255,204,0,0.8);
+  }
+
+  .h-dot {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #ffcc00;
+    margin: 0 -1px;
+    box-shadow: 0 0 6px rgba(255,204,0,1);
+  }
+
+  .h-labels {
+    display: flex;
+    gap: 14px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    color: #00ff88;
+    background: rgba(0,0,0,0.6);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+
+  /* ── Gimbal toggle button ── */
+  .gimbal-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 16px;
+    border-radius: 16px;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .gimbal-toggle-btn:hover {
+    background: rgba(78,148,247,0.75);
+  }
+
+  /* ── Gimbal d-pad ── */
+  .gimbal-dpad {
+    background: rgba(0,0,0,0.72);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    backdrop-filter: blur(4px);
+  }
+
+  .dpad-info {
+    display: flex;
+    justify-content: space-around;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    color: #88ddff;
+  }
+
+  .dpad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 3.5rem);
+    grid-template-rows: repeat(3, 3.5rem);
+    gap: 5px;
+  }
+
+  .dpad-btn {
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.2);
+    font-size: 1.3rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+
+  .dpad-btn:hover {
+    background: rgba(78,148,247,0.7);
+  }
+
+  .dpad-btn:active {
+    background: rgba(78,148,247,1);
+    transform: scale(0.92);
+  }
+
+  .dpad-center {
+    background: rgba(255,255,255,0.08);
+    color: #ffcc00;
+  }
+
+  .dpad-center:hover {
+    background: rgba(255,204,0,0.4);
+  }
+
+  .dpad-alt-up {
+    color: #4ade80;
+    border-color: rgba(74,222,128,0.3);
+  }
+
+  .dpad-alt-up:hover { background: rgba(74,222,128,0.3); }
+
+  .dpad-alt-down {
+    color: #f87171;
+    border-color: rgba(248,113,113,0.3);
+  }
+
+  .dpad-alt-down:hover { background: rgba(248,113,113,0.3); }
+
+  /* Quick action buttons below dpad */
+  .dpad-quick {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .dpad-quick-btn {
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.1);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.15);
+    font-size: 0.7rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    transition: background 0.15s;
+  }
+
+  .dpad-quick-btn:hover {
+    background: rgba(78,148,247,0.5);
+  }
+
+  /* Altitude display */
+  .dpad-alt-display {
+    margin-top: 5px;
+    text-align: center;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: #4ade80;
+    background: rgba(0,0,0,0.4);
+    padding: 3px 8px;
+    border-radius: 6px;
   }
 </style>

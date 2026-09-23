@@ -132,6 +132,79 @@
         element.download = 'mavlink_logs.txt';
         document.body.appendChild(element);
         element.click();
+        document.body.removeChild(element);
+    }
+
+    function downloadCSV() {
+        // Parse each log line into structured fields
+        const rows: string[][] = [
+          ['timestamp', 'message_type', 'sysid', 'compid', 'data']
+        ];
+
+        for (const log of logs) {
+            // Format: MSG_NAME(magic)::ISO_TIMESTAMP::sysid=X,compid=Y::{json}
+            const parts = log.split('::');
+            if (parts.length < 4) continue;
+
+            const msgPart  = parts[0].trim();                   // e.g. HEARTBEAT(0)
+            const tsPart   = parts[1].trim();                   // ISO timestamp
+            const idPart   = parts[2].trim();                   // sysid=1,compid=1
+            const dataPart = parts.slice(3).join('::').trim();  // JSON payload
+
+            const msgName  = msgPart.split('(')[0];
+            const sysid    = idPart.match(/sysid=(\d+)/)?.[1]  ?? '';
+            const compid   = idPart.match(/compid=(\d+)/)?.[1] ?? '';
+
+            // Escape data for CSV (wrap in quotes, escape inner quotes)
+            const safeData = `"${dataPart.replace(/"/g, '""')}"`;
+
+            rows.push([tsPart, msgName, sysid, compid, safeData]);
+        }
+
+        const csv      = rows.map(r => r.join(',')).join('\n');
+        const blob     = new Blob([csv], { type: 'text/csv' });
+        const a        = document.createElement('a');
+        const ts       = new Date().toISOString().replace(/[:.]/g, '-');
+        a.href         = URL.createObjectURL(blob);
+        a.download     = `mavlink_logs_${ts}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    }
+
+    function downloadJSON() {
+        const parsed: object[] = [];
+
+        for (const log of logs) {
+            const parts = log.split('::');
+            if (parts.length < 4) continue;
+
+            const msgPart  = parts[0].trim();
+            const tsPart   = parts[1].trim();
+            const idPart   = parts[2].trim();
+            const dataPart = parts.slice(3).join('::').trim();
+
+            const msgName  = msgPart.split('(')[0];
+            const sysid    = parseInt(idPart.match(/sysid=(\d+)/)?.[1]  ?? '0');
+            const compid   = parseInt(idPart.match(/compid=(\d+)/)?.[1] ?? '0');
+
+            let data: object = {};
+            try { data = JSON.parse(dataPart); } catch { data = { raw: dataPart }; }
+
+            parsed.push({ timestamp: tsPart, type: msgName, sysid, compid, data });
+        }
+
+        const json     = JSON.stringify(parsed, null, 2);
+        const blob     = new Blob([json], { type: 'application/json' });
+        const a        = document.createElement('a');
+        const ts       = new Date().toISOString().replace(/[:.]/g, '-');
+        a.href         = URL.createObjectURL(blob);
+        a.download     = `mavlink_logs_${ts}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
     }
 
     afterUpdate(() => {
@@ -165,7 +238,15 @@
                         </button>
                         <button class="btn btn-primary bg-blue-400 hover:bg-blue-500 relative" on:click={downloadLogs}>
                             <i class="fas fa-download"></i>
-                            <div class="tooltip">Download</div>
+                            <div class="tooltip">Download TXT</div>
+                        </button>
+                        <button class="btn btn-primary bg-green-500 hover:bg-green-600 relative" on:click={downloadCSV}>
+                            <i class="fas fa-file-csv"></i>
+                            <div class="tooltip">Export CSV</div>
+                        </button>
+                        <button class="btn btn-primary bg-purple-500 hover:bg-purple-600 relative" on:click={downloadJSON}>
+                            <i class="fas fa-file-code"></i>
+                            <div class="tooltip">Export JSON</div>
                         </button>
                     </div>
                 </div>

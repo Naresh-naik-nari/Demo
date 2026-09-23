@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import weatherCodes from '../lib/weathercodes.json';
-  import { mavLocationStore } from '../stores/mavlinkStore';
+  import { mavLocationStore, mavHeadingStore } from '../stores/mavlinkStore';
   import {
     darkModeStore,
     primaryColorStore,
@@ -35,6 +35,7 @@
   $: tertiaryColor = $tertiaryColorStore;
   $: fontColor = darkMode ? '#ffffff' : '#000000';
   $: mavLocation = $mavLocationStore;
+  $: droneHeading = $mavHeadingStore;
 
   let locationName = '';
   let temperature = '';
@@ -44,6 +45,23 @@
   let windSpeed = '';
   let windDirection = '';
   let error = '';
+
+  // Raw numeric values for crosswind calculation
+  let windSpeedNum = 0;
+  let windDirDeg = 0;
+
+  // Crosswind decomposition relative to drone heading
+  // headwind: positive = into the nose, negative = tailwind
+  // crosswind: positive = from right, negative = from left
+  function calcWindComponents(windDirDeg: number, windSpeedNum: number, heading: number): { head: number; cross: number } {
+    // Angle between wind direction and drone heading
+    const relAngle = ((windDirDeg - heading + 360) % 360) * Math.PI / 180;
+    const head  = parseFloat((windSpeedNum * Math.cos(relAngle)).toFixed(1));
+    const cross = parseFloat((windSpeedNum * Math.sin(relAngle)).toFixed(1));
+    return { head, cross };
+  }
+
+  $: windComponents = calcWindComponents(windDirDeg, windSpeedNum, droneHeading);
 
   async function fetchWeather() {
     try {
@@ -76,6 +94,9 @@
         }
         windSpeed = weatherData.current_weather.windspeed;
         windDirection = weatherData.current_weather.winddirection;
+        // Store raw numeric values for crosswind calculation
+        windSpeedNum = parseFloat(windSpeed.toString());
+        windDirDeg = parseFloat(windDirection.toString());
         if (parseFloat(windDirection.toString()) > 337.5 || parseFloat(windDirection.toString()) < 22.5) {
           windDirection += '° N';
         } else if (parseFloat(windDirection.toString()) > 22.5 && parseFloat(windDirection.toString()) < 67.5) {
@@ -118,8 +139,16 @@
     {#if error}
       <div class="error">{error}</div>
     {:else}
-      <div class="weather-detail wind">Wind Speed: {windSpeed} m/s</div>
-      <div class="weather-detail wind">Wind Direction: {windDirection}</div>
+      <div class="weather-detail wind">Wind: {windSpeed} m/s {windDirection}</div>
+      <div class="weather-detail crosswind">
+        <span class="{Math.abs(windComponents.head) > 5 ? 'warn' : ''}">
+          {windComponents.head >= 0 ? '↑ Head' : '↓ Tail'}: {Math.abs(windComponents.head)} m/s
+        </span>
+        &nbsp;|&nbsp;
+        <span class="{Math.abs(windComponents.cross) > 5 ? 'warn' : ''}">
+          {windComponents.cross >= 0 ? '→ Cross-R' : '← Cross-L'}: {Math.abs(windComponents.cross)} m/s
+        </span>
+      </div>
       <img src={weatherImage} alt={weatherDescription} class="weather-icon" />
       <div class="weather-summary">{weatherDescription}</div>
       <div class="weather-detail rain">Rain Chance: {rainChance}</div>
@@ -137,6 +166,18 @@
     {:else}
       <div class="weather-detail wind">Wind Speed: {windSpeed} m/s</div>
       <div class="weather-detail wind">Wind Direction: {windDirection}</div>
+      <!-- Crosswind breakdown relative to drone heading -->
+      <div class="crosswind-panel">
+        <div class="cw-title">Wind vs. Drone Heading ({droneHeading.toFixed(0)}°)</div>
+        <div class="cw-row">
+          <span class="cw-label">{windComponents.head >= 0 ? '↑ Headwind' : '↓ Tailwind'}</span>
+          <span class="cw-val {Math.abs(windComponents.head) > 5 ? 'warn' : ''}">{Math.abs(windComponents.head)} m/s</span>
+        </div>
+        <div class="cw-row">
+          <span class="cw-label">{windComponents.cross >= 0 ? '→ Crosswind (R)' : '← Crosswind (L)'}</span>
+          <span class="cw-val {Math.abs(windComponents.cross) > 5 ? 'warn' : ''}">{Math.abs(windComponents.cross)} m/s</span>
+        </div>
+      </div>
       <img src={weatherImage} alt={weatherDescription} class="weather-icon" />
       <div class="weather-summary">{weatherDescription}</div>
       <div class="weather-detail rain">Rain Chance: {rainChance}</div>
@@ -195,6 +236,51 @@
 
   #location-name, .weather-detail.wind {
     color: #66e1ff;
+  }
+
+  .weather-detail.crosswind {
+    font-size: 0.78rem;
+    color: #a0d4ff;
+    margin-top: 2px;
+  }
+
+  .crosswind-panel {
+    background: rgba(78, 148, 247, 0.1);
+    border: 1px solid rgba(78, 148, 247, 0.3);
+    border-radius: 0.5rem;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 0.82rem;
+  }
+
+  .cw-title {
+    font-size: 0.7rem;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+
+  .cw-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 2px 0;
+  }
+
+  .cw-label {
+    color: #88ddff;
+  }
+
+  .cw-val {
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    color: #66e1ff;
+  }
+
+  .warn {
+    color: #f59e0b !important;
+    font-weight: 700;
   }
   
   @media (max-height: 650px) {

@@ -15,6 +15,8 @@
     mavlinkParamStore,
     mavAltitudeStore,
     mavSpeedStore,
+    mavPitchStore,
+    mavRollStore,
     mavModelStore,
     mavTypeStore,
     mavStateStore,
@@ -56,6 +58,7 @@
   let online = get(onlineStore);
   let serialConnected = false;
   let serialConnecting = false;
+  let rtllTriggered = false; // RTLL guard — prevents re-triggering on same low-battery event
 
   async function toggleSerialConnection() {
     if (serialConnecting) return;
@@ -162,10 +165,7 @@
         const portOpen: boolean = data.portOpen ?? false;
         const mavOnline: boolean = data.online ?? false;
 
-        console.log(`🔍 Poll: ${mavLogs.length} logs, portOpen=${portOpen}, online=${mavOnline}`);
-
         if (mavLogs.length > 0) {
-          console.log(`📨 Processing ${mavLogs.length} logs`);
           mavLogs.forEach((log: string) => {
             getLogs(log.replace(/\\"/g, '"') + '\n');
           });
@@ -328,6 +328,23 @@
 
   // Message handlers for different MAVLink message types
   const messageHandlers: Record<string, MessageHandler> = {
+    ATTITUDE: (text: string) => {
+      // Parse pitch, roll, yaw from ATTITUDE message
+      // pitch/roll/yaw are in radians, convert to degrees
+      const pitch = extractValue(text, 'pitch');
+      const roll = extractValue(text, 'roll');
+      
+      if (pitch) {
+        const pitchDeg = (parseFloat(pitch) * 180 / Math.PI);
+        mavPitchStore.set(pitchDeg);
+      }
+      
+      if (roll) {
+        const rollDeg = (parseFloat(roll) * 180 / Math.PI);
+        mavRollStore.set(rollDeg);
+      }
+    },
+
     GLOBAL_POSITION_INT: (text: string) => {
       const lat = extractValue(text, 'lat');
       const lon = extractValue(text, 'lon');
@@ -459,7 +476,68 @@
 
     BATTERY_STATUS: (text: string) => {
       const battery = extractValue(text, 'batteryRemaining');
-      if (battery) mavBatteryStore.set(parseInt(battery));
+      if (battery) {
+        const level = parseInt(battery);
+        mavBatteryStore.set(level);
+
+        // ── RTLL: Return-To-Launch with Loiter on low battery ──────────────────
+        // Trigger when armed, battery drops below threshold, and not already triggered
+        const BATT_LOW_THRESHOLD = 20; // % — configurable
+        const LOITER_DURATION_MS = 30000; // 30 seconds loiter before RTL
+
+        if (
+          level <= BATT_LOW_THRESHOLD &&
+          get(mavArmedStateStore) &&
+          !rtllTriggered
+        ) {
+          rtllTriggered = true;
+
+          showNotification({
+            title: '⚠️ Low Battery — RTLL Activated',
+            content: `Battery at ${level}%. Entering LOITER for ${LOITER_DURATION_MS / 1000}s then RTL.`,
+            type: 'warning',
+            duration: 8000
+          });
+
+          // Step 1: Switch to LOITER mode
+          fetch('/api/mavlink/send_command', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'command': 'DO_SET_MODE',
+              'params': '1,5',
+              'useCmdLong': 'true'
+            }
+          });
+
+          // Step 2: After loiter duration, switch to RTL
+          setTimeout(() => {
+            if (get(mavArmedStateStore)) { // Only RTL if still armed
+              showNotification({
+                title: '🏠 RTL Initiated',
+                content: 'Loiter complete. Returning to launch.',
+                type: 'warning',
+                duration: 8000
+              });
+              fetch('/api/mavlink/send_command', {
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/json',
+                  'command': 'DO_SET_MODE',
+                  'params': '1,6',
+                  'useCmdLong': 'true'
+                }
+              });
+            }
+            // Reset after landing (disarm clears it)
+          }, LOITER_DURATION_MS);
+        }
+
+        // Reset RTLL flag when disarmed
+        if (!get(mavArmedStateStore)) {
+          rtllTriggered = false;
+        }
+      }
     },
 
     COMMAND_ACK: (text: string) => {
@@ -471,7 +549,8 @@
       const commandName = MavCmd[parseInt(command)];
       const resultName = MavResult[parseInt(result)];
       
-      if (commandName === 'REQUEST_MESSAGE') return;
+      // Don't show notifications for background telemetry stream requests
+      if (commandName === 'REQUEST_MESSAGE' || commandName === 'SET_MESSAGE_INTERVAL') return;
 
       const isArmCmd = commandName === 'COMPONENT_ARM_DISARM';
       const isArming = text.includes('"_param1":1') || text.includes('"param1":1');
@@ -572,12 +651,6 @@
     logs = logs.slice(-1000);
     logs = [...logs, text];
     mavlinkLogStore.set(logs);
-
-    // Log the first 3 chars of the message type to confirm processing
-    const msgType = text.split('(')[0];
-    if (msgType !== 'HEARTBEAT') {
-      console.log(`🔄 Processing: ${msgType}`);
-    }
 
     // Route to the right handler by message type — first match wins
     for (const [messageType, handler] of Object.entries(messageHandlers)) {
