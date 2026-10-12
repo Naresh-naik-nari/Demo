@@ -2,6 +2,10 @@
   import '@fortawesome/fontawesome-free/css/all.min.css';
   import { onMount, onDestroy } from 'svelte';
   import Modal from './Modal.svelte';
+  import ArtificialHorizon from './ArtificialHorizon.svelte';
+
+  // PFD overlay state — toggled by the expand button inside ArtificialHorizon
+  let pfdExpanded = false;
   import {
     darkModeStore,
     primaryColorStore,
@@ -304,13 +308,11 @@
   // RPV altitude adjustment (±5m steps)
   async function adjustAltitude(delta: number) {
     const newAlt = Math.max(0, altitude + delta);
-    await fetch('/api/mavlink/send_command', {
+    await fetch('/api/mavlink/set_altitude', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'command': 'CONTINUE_AND_CHANGE_ALT',
-        'params': `0,0,0,0,0,0,${newAlt}`,
-        'useCmdLong': 'true'
+        'altitude': String(newAlt)
       }
     });
   }
@@ -423,27 +425,12 @@
 
       <!-- Bottom-right: Artificial Horizon + Gimbal controls -->
       <div class="osd-br-panel">
-        <!-- Artificial Horizon (mini) -->
-        <div class="mini-horizon" title="Attitude: Pitch {pitch.toFixed(1)}° Roll {roll.toFixed(1)}°">
-          <div class="horizon-clip">
-            <div class="horizon-rotate" style="transform: rotate({roll}deg);">
-              <div class="horizon-translate" style="transform: translateY({pitch * 3.0}px);">
-                <div class="h-sky"></div>
-                <div class="h-line"></div>
-                <div class="h-ground"></div>
-              </div>
-            </div>
-            <!-- Fixed aircraft symbol -->
-            <div class="h-aircraft">
-              <div class="h-wing h-wing-l"></div>
-              <div class="h-dot"></div>
-              <div class="h-wing h-wing-r"></div>
-            </div>
-          </div>
-          <div class="h-labels">
-            <span>P {pitch.toFixed(1)}°</span>
-            <span>R {roll.toFixed(1)}°</span>
-          </div>
+        <!-- Artificial Horizon (mini PFD) — click ⛶ to expand over video -->
+        <div class="mini-horizon">
+          <ArtificialHorizon
+            expanded={pfdExpanded}
+            on:toggle={() => (pfdExpanded = !pfdExpanded)}
+          />
         </div>
 
         <!-- Gimbal joystick toggle -->
@@ -572,6 +559,17 @@
     </div>
 
   </div>
+
+  <!-- ── PFD full-overlay (shown when pfdExpanded = true) ── -->
+  {#if pfdExpanded}
+    <div class="pfd-overlay" role="region" aria-label="Primary Flight Display">
+      <ArtificialHorizon
+        expanded={pfdExpanded}
+        on:toggle={() => (pfdExpanded = !pfdExpanded)}
+      />
+    </div>
+  {/if}
+
 </div>
 
 <!-- ─────────────────────── Styles ─────────────────────── -->
@@ -741,99 +739,24 @@
 
   /* ── Mini Artificial Horizon ── */
   .mini-horizon {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-  }
-
-  .horizon-clip {
-    width: 180px;
-    height: 180px;
-    border-radius: 50%;
+    width: 220px;
+    height: 124px;
+    border-radius: 6px;
     overflow: hidden;
-    border: 2px solid rgba(255,255,255,0.4);
+    border: 1.5px solid rgba(255,255,255,0.3);
+    box-shadow: 0 0 10px rgba(0,0,0,0.6);
+    background: #000;
     position: relative;
-    box-shadow: 0 0 8px rgba(0,0,0,0.6);
   }
 
-  .horizon-rotate {
+  /* ── PFD full overlay — covers the entire live-feed container ── */
+  .pfd-overlay {
     position: absolute;
-    width: 300%;
-    height: 300%;
-    top: -100%;
-    left: -100%;
-    transition: transform 0.25s ease-out;
-  }
-
-  .horizon-translate {
-    width: 100%;
-    height: 100%;
-    transition: transform 0.25s ease-out;
-  }
-
-  .h-sky {
-    position: absolute;
-    width: 100%;
-    height: 50%;
-    top: 0;
-    background: linear-gradient(to bottom, #1a6fbf, #5aabff);
-  }
-
-  .h-ground {
-    position: absolute;
-    width: 100%;
-    height: 50%;
-    bottom: 0;
-    background: linear-gradient(to bottom, #7a3a10, #4a2008);
-  }
-
-  .h-line {
-    position: absolute;
-    top: 50%;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: white;
-    transform: translateY(-50%);
-    box-shadow: 0 0 4px rgba(255,255,255,0.8);
-  }
-
-  .h-aircraft {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    inset: 0;
+    z-index: 45;           /* above video (z-20) and OSD (z-30) but below toolbar (z-40)... */
+    /* we use z-45 so toolbar stays accessible */
+    background: #000;
     display: flex;
-    align-items: center;
-    z-index: 5;
-  }
-
-  .h-wing {
-    width: 48px;
-    height: 5px;
-    background: #ffcc00;
-    box-shadow: 0 0 4px rgba(255,204,0,0.8);
-  }
-
-  .h-dot {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #ffcc00;
-    margin: 0 -1px;
-    box-shadow: 0 0 6px rgba(255,204,0,1);
-  }
-
-  .h-labels {
-    display: flex;
-    gap: 14px;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9rem;
-    color: #00ff88;
-    background: rgba(0,0,0,0.6);
-    padding: 4px 10px;
-    border-radius: 4px;
   }
 
   /* ── Gimbal toggle button ── */

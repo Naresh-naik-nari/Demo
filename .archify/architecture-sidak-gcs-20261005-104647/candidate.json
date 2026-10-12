@@ -1,0 +1,275 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Sidak GCS — Runtime Architecture",
+    "subtitle": "SvelteKit ground-control station for ArduPilot drones",
+    "output": ".archify/architecture-sidak-gcs-20261005-104647/sidak-gcs.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Naresh-naik-nari/Demo",
+      "revision": "f071e25c053b3e5eaa11f17b8f7de0a535cc0849"
+    }
+  },
+  "components": [
+    {
+      "id": "pilot",
+      "type": "external",
+      "label": "GCS Operator",
+      "sublabel": "Browser (Chromium)",
+      "pos": [40, 260],
+      "size": [130, 60],
+      "sources": [{"path": "src/routes/+layout.svelte", "line": 1}]
+    },
+    {
+      "id": "layout",
+      "type": "frontend",
+      "label": "+layout.svelte",
+      "sublabel": "Heartbeat poll · Log dispatch · RTLL",
+      "tag": "1.1 s interval",
+      "pos": [240, 260],
+      "size": [160, 68],
+      "sources": [{"path": "src/routes/+layout.svelte", "line": 155}]
+    },
+    {
+      "id": "stores",
+      "type": "frontend",
+      "label": "Svelte Stores",
+      "sublabel": "mavlinkStore · mapStore · missionStore",
+      "pos": [240, 110],
+      "size": [160, 60],
+      "sources": [{"path": "src/stores/mavlinkStore.ts", "line": 1}]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "UI Components",
+      "sublabel": "LiveFeed · Stats · Map · Controls · PFD",
+      "pos": [240, 400],
+      "size": [160, 60],
+      "sources": [{"path": "src/components/LiveFeed.svelte", "line": 1}]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "MAVLink API Route",
+      "sublabel": "/api/mavlink/[type]",
+      "pos": [500, 260],
+      "size": [160, 60],
+      "sources": [{"path": "src/routes/api/mavlink/[type]/+server.ts", "line": 22}]
+    },
+    {
+      "id": "mavlib",
+      "type": "backend",
+      "label": "MAVLink Library",
+      "sublabel": "lib/server/mavlink.ts",
+      "tag": "globalThis singleton",
+      "pos": [780, 260],
+      "size": [160, 68],
+      "sources": [{"path": "src/lib/server/mavlink.ts", "line": 1}]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite (LibSQL)",
+      "sublabel": "users · sessions · missions",
+      "pos": [500, 110],
+      "size": [160, 60],
+      "sources": [{"path": "src/lib/server/db.ts", "line": 1}]
+    },
+    {
+      "id": "tiles",
+      "type": "backend",
+      "label": "Tile Proxy / Cache",
+      "sublabel": "/api/tiles/{z}/{x}/{y}",
+      "pos": [500, 400],
+      "size": [160, 60],
+      "sources": [{"path": "src/routes/api/mavlink/[type]/+server.ts", "line": 1}]
+    },
+    {
+      "id": "fc",
+      "type": "external",
+      "label": "ArduPilot FC",
+      "sublabel": "UDP :14550 · Serial · TCP",
+      "pos": [1020, 260],
+      "size": [140, 60],
+      "sources": [{"path": "src/lib/server/mavlink.ts", "line": 127}]
+    },
+    {
+      "id": "mediamtx",
+      "type": "external",
+      "label": "MediaMTX",
+      "sublabel": "WebRTC WHEP :8889",
+      "pos": [240, 540],
+      "size": [140, 56],
+      "sources": [{"path": "src/components/LiveFeed.svelte", "line": 27}]
+    },
+    {
+      "id": "weather",
+      "type": "cloud",
+      "label": "Open-Meteo / Nominatim",
+      "sublabel": "weather forecast · reverse geocode",
+      "pos": [40, 430],
+      "size": [160, 60],
+      "sources": [{"path": "src/components/Weather.svelte", "line": 1}]
+    },
+    {
+      "id": "osm",
+      "type": "cloud",
+      "label": "OSM / Google Tiles",
+      "sublabel": "tile.openstreetmap.org",
+      "pos": [780, 400],
+      "size": [160, 56],
+      "sources": [{"path": "src/routes/api/mavlink/[type]/+server.ts", "line": 1}]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Browser (untrusted — no direct FC access)",
+      "wraps": ["pilot", "layout", "stores", "ui", "weather"],
+      "pad": 18
+    },
+    {
+      "kind": "region",
+      "label": "SvelteKit Node.js Server",
+      "wraps": ["api", "mavlib", "db", "tiles"],
+      "pad": 22
+    }
+  ],
+  "connections": [
+    {
+      "id": "pilot-to-layout",
+      "from": "pilot",
+      "to": "layout",
+      "label": "interact",
+      "variant": "emphasis"
+    },
+    {
+      "id": "layout-to-api",
+      "from": "layout",
+      "to": "api",
+      "label": "POST /api/mavlink/heartbeat",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-mavlib",
+      "from": "api",
+      "to": "mavlib",
+      "label": "send / drain logs",
+      "variant": "emphasis"
+    },
+    {
+      "id": "mavlib-to-fc",
+      "from": "mavlib",
+      "to": "fc",
+      "label": "MAVLink V2 frames",
+      "variant": "emphasis"
+    },
+    {
+      "id": "fc-to-mavlib",
+      "from": "fc",
+      "to": "mavlib",
+      "label": "telemetry stream"
+    },
+    {
+      "id": "layout-to-stores",
+      "from": "layout",
+      "to": "stores",
+      "label": "store.set()",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "stores-to-ui",
+      "from": "stores",
+      "to": "ui",
+      "label": "reactive $stores"
+    },
+    {
+      "id": "api-to-db",
+      "from": "api",
+      "to": "db",
+      "label": "mission CRUD",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "tiles-to-osm",
+      "from": "tiles",
+      "to": "osm",
+      "label": "proxy + cache",
+      "variant": "dashed"
+    },
+    {
+      "id": "ui-to-tiles",
+      "from": "ui",
+      "to": "tiles",
+      "label": "/api/tiles",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "ui-to-mediamtx",
+      "from": "ui",
+      "to": "mediamtx",
+      "label": "iframe (cross-origin)",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "ui-to-weather",
+      "from": "ui",
+      "to": "weather",
+      "label": "fetch (browser)",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Primary telemetry path",
+      "items": [
+        "+layout.svelte polls /api/mavlink/heartbeat every 1.1 s",
+        "Server drains S.newLogs[] — MAVLink log strings serialised by node-mavlink",
+        "getLogs() regex-dispatches to per-message-type handlers",
+        "Handlers call mavlinkStore.set() → Svelte reactivity updates all components"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "MAVLink Library (lib/server/mavlink.ts)",
+      "items": [
+        "Singleton state on globalThis.__mav — survives Vite HMR reloads",
+        "Transports: UDP dgram (default :14550), SerialPort (USB VID auto-detect), TCP net.Socket",
+        "USB hotplug watcher: scans SerialPort.list() every 2 s, auto-connects on new device",
+        "Sends MAV_CMD_SET_MESSAGE_INTERVAL (CMD 511) for each stream on connect (4 Hz attitude, 2 Hz battery, etc.)",
+        "Sends 1 Hz MAVLink heartbeat to FC so it keeps sending telemetry"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Arming sequence (no RC required)",
+      "items": [
+        "Write ARMING_CHECK=0 → wait 200 ms (disables RC pre-arm check)",
+        "Send COMPONENT_ARM_DISARM(1, 21196) with force flag",
+        "Wait 1 s → restore ARMING_CHECK=1",
+        "RTLL: DO_SET_MODE LOITER at ≤20% battery, then RTL after 30 s"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust boundaries",
+      "items": [
+        "Browser never opens a socket to the FC — all MAVLink I/O is server-side",
+        "Video bypasses SvelteKit: browser embeds MediaMTX iframe (cross-origin HTTP :8889)",
+        "Weather & Nominatim fetched directly from browser (internet, no server proxy)",
+        "Tile fetches proxied and cached by SvelteKit server for offline-capable operation"
+      ]
+    }
+  ]
+}

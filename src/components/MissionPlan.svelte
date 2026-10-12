@@ -202,8 +202,21 @@
           await writeParameter('RTL_ALT', parseInt(modal.inputValues![0]) * 100, get(mavlinkParamStore).RTL_ALT.param_type);
           await writeParameter('RTL_CLIMB_MIN', 0, get(mavlinkParamStore).RTL_CLIMB_MIN.param_type);
           if (get(mavStateStore) === 'STANDBY') {
-            await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 bypasses pre-arm checks (RC, GPS, etc.)
+            await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED
+            await new Promise(resolve => setTimeout(resolve, 300));
+            // Disable pre-arm checks (no RC transmitter required from GCS)
+            await fetch('/api/mavlink/write_param', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
+            });
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 force flag
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Restore checks
+            await fetch('/api/mavlink/write_param', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
+            });
             await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, 'true'); // Takeoff to 10m
             await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
           }

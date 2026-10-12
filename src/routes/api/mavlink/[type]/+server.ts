@@ -14,6 +14,7 @@ import {
     loadMissionItem,
     clearAllMissionItems,
     setPositionLocal,
+    setAltitudeGlobal,
     newLogs,
     logs
 } from '$lib/server/mavlink';
@@ -97,6 +98,21 @@ export const POST: RequestHandler = async (event): Promise<Response> => {
                 console.error(err);
                 return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
             }
+        case 'set_altitude': {
+            const altHeader = event.request.headers.get('altitude');
+            const altMeters = parseFloat(altHeader ?? '');
+            if (isNaN(altMeters) || altMeters < 0) {
+                return new Response('Invalid altitude', { status: 400 });
+            }
+            try {
+                await setAltitudeGlobal(altMeters);
+                console.log(`Altitude target set: ${altMeters} m`);
+                return new Response(`Altitude target set: ${altMeters} m`, { status: 200 });
+            } catch (err) {
+                console.error(err);
+                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
+            }
+        }
         case 'request_params':
             try {
                 await requestParameters();
@@ -174,12 +190,6 @@ export const POST: RequestHandler = async (event): Promise<Response> => {
                 return new Response((err as Error).message, { status: 500 });
             }
         }
-            try {
-                await forceConnect();
-                return new Response(JSON.stringify(getConnectionStatus()), { status: 200, headers: { 'Content-Type': 'application/json' } });
-            } catch (err) {
-                return new Response(JSON.stringify({ ...getConnectionStatus(), error: (err as Error).message }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-            }
         case 'disconnect':
             try {
                 await forceDisconnect();

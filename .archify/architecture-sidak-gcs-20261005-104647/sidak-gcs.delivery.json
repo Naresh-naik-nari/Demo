@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "eef893d6-571f-4a1e-8796-4667c65bdbb4",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\candidate.json",
+  "output": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.html",
+  "specification": {
+    "sha256": "285ec3976105118b32ab668ade251f98f755e480a79e49549966bf72d2ec4ca6",
+    "bytes": 7836
+  },
+  "artifact": {
+    "sha256": "63b01d85d1e1d389c253a1455509c2176f6f7e690ec8e95e166d10239182c0e8",
+    "bytes": 775995
+  }
+}

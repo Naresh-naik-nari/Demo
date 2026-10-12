@@ -1,7 +1,7 @@
 <script lang="ts">
   import { MavType, MavState, MavAutopilot } from 'mavlink-mappings/dist/lib/minimal';
   import { MavCmd, MavResult } from 'mavlink-mappings/dist/lib/common';
-  import { CopterMode } from 'mavlink-mappings/dist/lib/ardupilotmega';
+  import { CopterMode, PlaneMode, RoverMode } from 'mavlink-mappings/dist/lib/ardupilotmega';
   import '@fortawesome/fontawesome-free/css/all.min.css';
   import { page } from '$app/stores';
   import { onMount, onDestroy, afterUpdate } from 'svelte';
@@ -127,11 +127,6 @@
   } else if (battery && battery > batteryAlerts[batteryAlertIndex]) {
     batteryAlertShown = false;
   }
-
-  // @ts-ignore
-  String.prototype.toProperCase = function () {
-    return this.replace(/\w\S*/g, function(txt){return txt.charAt(0).toUpperCase() + txt.substring(1).toLowerCase();});
-  };
 
   function updateDashboardHeight() {
     const dashboard = document.querySelector('.dashboard');
@@ -329,20 +324,13 @@
   // Message handlers for different MAVLink message types
   const messageHandlers: Record<string, MessageHandler> = {
     ATTITUDE: (text: string) => {
-      // Parse pitch, roll, yaw from ATTITUDE message
-      // pitch/roll/yaw are in radians, convert to degrees
-      const pitch = extractValue(text, 'pitch');
-      const roll = extractValue(text, 'roll');
-      
-      if (pitch) {
-        const pitchDeg = (parseFloat(pitch) * 180 / Math.PI);
-        mavPitchStore.set(pitchDeg);
-      }
-      
-      if (roll) {
-        const rollDeg = (parseFloat(roll) * 180 / Math.PI);
-        mavRollStore.set(rollDeg);
-      }
+      // pitch/roll/yaw are in radians in the MAVLink message — convert to degrees
+      const pitchRaw = extractValue(text, 'pitch');
+      const rollRaw  = extractValue(text, 'roll');
+
+      // Use !== '' instead of truthiness — value can be "0" which is falsy
+      if (pitchRaw !== '') mavPitchStore.set(parseFloat(pitchRaw) * 180 / Math.PI);
+      if (rollRaw  !== '') mavRollStore.set(parseFloat(rollRaw)   * 180 / Math.PI);
     },
 
     GLOBAL_POSITION_INT: (text: string) => {
@@ -352,13 +340,13 @@
       if (position) mavLocationStore.set(position);
 
       const heading = extractValue(text, 'hdg');
-      if (heading) mavHeadingStore.set(parseFloat(heading) / 100);
+      if (heading !== '') mavHeadingStore.set(parseFloat(heading) / 100);
 
       const altitude = extractValue(text, 'relativeAlt');
-      if (altitude) mavAltitudeStore.set(parseFloat(altitude) / 1000);
+      if (altitude !== '') mavAltitudeStore.set(parseFloat(altitude) / 1000);
 
       const speed = calculateSpeed(text);
-      if (speed) mavSpeedStore.set(parseFloat(speed.toFixed(2)));
+      if (speed !== null) mavSpeedStore.set(parseFloat(speed.toFixed(2)));
     },
 
     GPS_RAW_INT: (text: string) => {
@@ -449,7 +437,21 @@
       }
 
       const customMode = extractValue(text, 'customMode');
-      if (customMode) mavModeStore.set(CopterMode[parseInt(customMode)]);
+      if (customMode) {
+        const modeNum = parseInt(customMode);
+        const vType = get(mavTypeStore).toUpperCase();
+        // Pick the right ArduPilot mode enum based on vehicle type
+        let modeName: string | undefined;
+        if (vType === 'FIXED_WING') {
+          modeName = PlaneMode[modeNum];
+        } else if (vType === 'GROUND_ROVER' || vType === 'SURFACE_BOAT') {
+          modeName = RoverMode[modeNum];
+        } else {
+          // Copter, VTOL, generic multirotor, helicopter, etc.
+          modeName = CopterMode[modeNum];
+        }
+        if (modeName) mavModeStore.set(modeName);
+      }
     },
 
     MISSION_CURRENT: (text: string) => {
@@ -550,7 +552,11 @@
       const resultName = MavResult[parseInt(result)];
       
       // Don't show notifications for background telemetry stream requests
+      // or gimbal commands when no mount is configured on the FC
       if (commandName === 'REQUEST_MESSAGE' || commandName === 'SET_MESSAGE_INTERVAL') return;
+      if (commandName === 'DO_MOUNT_CONTROL' || commandName === 'SET_CAMERA_ZOOM' ||
+          commandName === 'VIDEO_START_CAPTURE' || commandName === 'VIDEO_STOP_CAPTURE' ||
+          commandName === 'IMAGE_START_CAPTURE') return;
 
       const isArmCmd = commandName === 'COMPONENT_ARM_DISARM';
       const isArming = text.includes('"_param1":1') || text.includes('"param1":1');

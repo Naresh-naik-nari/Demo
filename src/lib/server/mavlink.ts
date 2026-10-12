@@ -968,6 +968,40 @@ async function setPositionLocal(x: number, y: number, z: number) {
     await _send(m);
 }
 
+/**
+ * Change altitude while holding current lat/lon position.
+ * Uses SET_POSITION_TARGET_GLOBAL_INT (MAVLink msg #86) which ArduPilot
+ * accepts in GUIDED mode for both Plane (alt-hold) and Copter.
+ *
+ * typeMask bits (set = ignore field):
+ *   bit 0  = vx,  bit 1  = vy,  bit 2  = vz
+ *   bit 3  = ax,  bit 4  = ay,  bit 5  = az
+ *   bit 6  = force,  bit 7  = yaw,  bit 8  = yaw_rate
+ *   bit 9  = lat/lon (ignore position → altitude-only change)
+ *   bit 10 = alt  (keep clear to USE altitude)
+ * We want: ignore vx/vy/vz, ax/ay/az, yaw, yaw_rate, lat/lon → use alt only.
+ * typeMask = 0b1_1111_0111_1111 = 0x0FBF (ignore everything except alt)
+ *
+ * coordinateFrame 5 = MAV_FRAME_GLOBAL_RELATIVE_ALT_INT (relative to home, metres)
+ */
+async function setAltitudeGlobal(altMeters: number) {
+    const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
+    const m = new common.SetPositionTargetGlobalInt();
+    m.timeBootMs        = 0;
+    m.targetSystem      = 1;
+    m.targetComponent   = 1;
+    m.coordinateFrame   = 6;     // MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+    (m as any).typeMask = 0x0FBF; // ignore everything except alt
+    (m as any).latInt   = 0;     // ignored
+    (m as any).lonInt   = 0;     // ignored
+    m.alt               = altMeters;
+    m.vx = 0; m.vy = 0; m.vz = 0;
+    m.afx = 0; m.afy = 0; m.afz = 0;
+    m.yaw = 0; m.yawRate = 0;
+    await _send(m);
+    console.log(`🔼 setAltitudeGlobal: ${altMeters} m`);
+}
+
 function convertBigIntToNumber(obj: any): any {
     if (typeof obj === 'bigint') return Number(obj);
     if (Array.isArray(obj)) return obj.map(convertBigIntToNumber);
@@ -992,6 +1026,7 @@ export {
     loadMissionItem,
     clearAllMissionItems,
     setPositionLocal,
+    setAltitudeGlobal,
     common,
 };
 

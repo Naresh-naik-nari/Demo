@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "skipped",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\candidate.json",
+    "sha256": "285ec3976105118b32ab668ade251f98f755e480a79e49549966bf72d2ec4ca6",
+    "bytes": 7836
+  },
+  "artifact": {
+    "path": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.html",
+    "sha256": "63b01d85d1e1d389c253a1455509c2176f6f7e690ec8e95e166d10239182c0e8",
+    "bytes": 775995
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "skipped"
+  },
+  "failedStage": "browser-check",
+  "diagnostics": [
+    {
+      "code": "viewer/chrome-unavailable",
+      "severity": "warning",
+      "message": "Chrome or Chromium is unavailable. Set ARCHIFY_CHROME to its executable path.",
+      "subject": {
+        "artifact": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.html"
+      },
+      "evidence": {
+        "executable": null
+      },
+      "supportedFixes": [
+        "set ARCHIFY_CHROME to a Chrome or Chromium executable and rerun browser-check"
+      ]
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 1,
+    "shown": 1,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.finalize.json",
+    "summaryReceipt": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\phani\\Desktop\\New folder\\Demo\\.archify\\architecture-sidak-gcs-20261005-104647\\sidak-gcs.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.0.1",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-08T07:33:20.175Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 1636
+}

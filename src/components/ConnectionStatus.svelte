@@ -62,7 +62,34 @@
             console.log(`   Params: [${param}, 21196]`);
             console.log(`   Param1: ${param} (${arming ? '1=ARM' : '0=DISARM'})`);
             console.log(`   Param2: 21196 (force flag - bypass pre-arm checks)`);
-            
+
+            // If arming: temporarily disable ARMING_CHECK so ArduPlane/Copter
+            // won't block arming when no RC transmitter is connected.
+            // ARMING_CHECK=0 means "skip all checks"; we restore it after.
+            if (arming) {
+                await fetch('/api/mavlink/send_command', {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        'command': 'DO_SET_MODE',
+                        'params': '1,4',         // GUIDED
+                        'useCmdLong': 'true'
+                    }
+                });
+                await new Promise(r => setTimeout(r, 300));
+
+                await fetch('/api/mavlink/write_param', {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        'id': 'ARMING_CHECK',
+                        'value': '0',            // disable all pre-arm checks
+                        'type': '6'              // int32
+                    }
+                });
+                await new Promise(r => setTimeout(r, 200));
+            }
+
             const response = await fetch('/api/mavlink/send_command', {
                 method: 'POST',
                 headers: {
@@ -73,10 +100,24 @@
                     'useArduPilotMega': 'false'
                 }
             });
-            
+
             if (response.ok) {
                 const result = await response.text();
                 console.log(`✅ ARM/DISARM command sent successfully:`, result);
+
+                // Restore ARMING_CHECK=1 (all checks on) shortly after arming
+                if (arming) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    fetch('/api/mavlink/write_param', {
+                        method: 'POST',
+                        headers: {
+                            'content-type': 'application/json',
+                            'id': 'ARMING_CHECK',
+                            'value': '1',        // restore default checks
+                            'type': '6'
+                        }
+                    });
+                }
             } else {
                 const error = await response.text();
                 console.error(`❌ ARM/DISARM command failed:`, error);

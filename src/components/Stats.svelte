@@ -377,8 +377,19 @@
           if (get(mavStateStore) === 'STANDBY') {
             await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true'); // 4 is GUIDED
             await new Promise(resolve => setTimeout(resolve, 300));
+            // Disable pre-arm checks (RC not required when using GCS)
+            await fetch('/api/mavlink/write_param', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
+            });
+            await new Promise(resolve => setTimeout(resolve, 200));
             await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
             await new Promise(resolve => setTimeout(resolve, 1000));
+            // Restore checks
+            await fetch('/api/mavlink/write_param', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
+            });
             await sendMavlinkCommand('NAV_TAKEOFF', '0,0,0,0,0,0,10', 'true');
             await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
           }
@@ -442,8 +453,19 @@
             await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
             await new Promise(resolve => setTimeout(resolve, 300));
           }
+          // Disable pre-arm checks before arming
+          await fetch('/api/mavlink/write_param', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
+          });
+          await new Promise(resolve => setTimeout(resolve, 200));
           await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
           await new Promise(resolve => setTimeout(resolve, 1000));
+          // Restore checks
+          await fetch('/api/mavlink/write_param', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
+          });
           await sendMavlinkCommand('NAV_TAKEOFF', `0,0,0,0,0,0,${parseInt(modal.inputValues![0])}`, 'true');
           modal.$destroy();
         },
@@ -511,10 +533,23 @@
     }
     armConfirmStep = false;
     if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
-    // Switch to GUIDED first so FC accepts the ARM without needing RC input
+    // Switch to GUIDED first
     await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
     await new Promise(resolve => setTimeout(resolve, 300));
+    // Disable pre-arm checks so missing RC won't block arming
+    await fetch('/api/mavlink/write_param', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
+    });
+    await new Promise(resolve => setTimeout(resolve, 200));
     await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
+    // Restore checks after arm
+    setTimeout(() => {
+      fetch('/api/mavlink/write_param', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
+      });
+    }, 1000);
   }
 
   async function disarmVehicle() {

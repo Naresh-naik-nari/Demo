@@ -53,17 +53,20 @@
   }
 
   async function goToAltitude(targetAltitude: number) {
-    // First ensure we're in GUIDED mode
+    // Ensure GUIDED mode first
     if (mavMode !== 'GUIDED') {
       await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-      await new Promise(resolve => setTimeout(resolve, 500)); // Wait for mode change
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
-    
-    // Use MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT (30)
-    // This changes altitude while maintaining current position
-    // param1: Action (0=hold, 1=continue mission, 2=pause)
-    // param7: Target altitude in meters (relative to home)
-    await sendMavlinkCommand('CONTINUE_AND_CHANGE_ALT', `0,0,0,0,0,0,${targetAltitude}`, 'true');
+    // SET_POSITION_TARGET_GLOBAL_INT via dedicated endpoint — works on both
+    // ArduPlane and ArduCopter GUIDED mode (no CMD ACK needed, it's a message).
+    await fetch('/api/mavlink/set_altitude', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'altitude': String(targetAltitude)
+      }
+    });
     console.log(`Going to altitude: ${targetAltitude} m`);
   }
   
