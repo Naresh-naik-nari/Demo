@@ -2,10 +2,10 @@
   import '@fortawesome/fontawesome-free/css/all.min.css';
   import { onMount, onDestroy } from 'svelte';
   import Modal from './Modal.svelte';
+  import { sendCommand, setAltitude, heartbeat as mavHeartbeat } from '$lib/api/mavlink';
+
   import ArtificialHorizon from './ArtificialHorizon.svelte';
 
-  // PFD overlay state — toggled by the expand button inside ArtificialHorizon
-  let pfdExpanded = false;
   import {
     darkModeStore,
     primaryColorStore,
@@ -22,6 +22,9 @@
     mavPitchStore,
     mavRollStore
   } from '../stores/mavlinkStore';
+
+  // PFD overlay state — toggled by the expand button inside ArtificialHorizon
+  let pfdExpanded = false;
 
   // Video feed URL built from .env variables (VITE_ prefix = exposed to client)
   const VIDEO_PORT = import.meta.env.VITE_VIDEO_PORT ?? '8889';
@@ -255,66 +258,36 @@
 
   async function sendGimbal(pitchDelta: number, yawDelta: number) {
     const newPitch = Math.max(-90, Math.min(90, gimbalTilt + pitchDelta));
-    // Pan wraps around full 360°
     const newYaw   = ((gimbalPan + yawDelta) % 360 + 360) % 360;
-    await fetch('/api/mavlink/send_command', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': 'DO_MOUNT_CONTROL',
-        'params': `${newPitch},0,${newYaw},0,0,0,2`,
-        'useCmdLong': 'true'
-      }
-    });
+    try {
+      await sendCommand('DO_MOUNT_CONTROL', [newPitch, 0, newYaw, 0, 0, 0, 2], true);
+    } catch (err) { console.error('[LiveFeed] sendGimbal failed:', err); }
   }
 
   async function centerGimbal() {
-    await fetch('/api/mavlink/send_command', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': 'DO_MOUNT_CONTROL',
-        'params': '0,0,0,0,0,0,2',
-        'useCmdLong': 'true'
-      }
-    });
+    try {
+      await sendCommand('DO_MOUNT_CONTROL', [0, 0, 0, 0, 0, 0, 2], true);
+    } catch (err) { console.error('[LiveFeed] centerGimbal failed:', err); }
   }
 
   async function tiltDown90() {
-    await fetch('/api/mavlink/send_command', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': 'DO_MOUNT_CONTROL',
-        'params': `-90,0,${gimbalPan},0,0,0,2`,
-        'useCmdLong': 'true'
-      }
-    });
+    try {
+      await sendCommand('DO_MOUNT_CONTROL', [-90, 0, gimbalPan, 0, 0, 0, 2], true);
+    } catch (err) { console.error('[LiveFeed] tiltDown90 failed:', err); }
   }
 
   async function adjustZoom(delta: number) {
     const newZoom = Math.max(1, Math.min(30, gimbalZoom + delta));
-    await fetch('/api/mavlink/send_command', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': 'SET_CAMERA_ZOOM',
-        'params': `2,${newZoom},0,0,0,0,0`,
-        'useCmdLong': 'true'
-      }
-    });
+    try {
+      await sendCommand('SET_CAMERA_ZOOM', [2, newZoom, 0, 0, 0, 0, 0], true);
+    } catch (err) { console.error('[LiveFeed] adjustZoom failed:', err); }
   }
 
-  // RPV altitude adjustment (±5m steps)
   async function adjustAltitude(delta: number) {
     const newAlt = Math.max(0, altitude + delta);
-    await fetch('/api/mavlink/set_altitude', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'altitude': String(newAlt)
-      }
-    });
+    try {
+      await setAltitude(newAlt);
+    } catch (err) { console.error('[LiveFeed] adjustAltitude failed:', err); }
   }
 
   // Trigger camera action based on current mode
@@ -362,9 +335,9 @@
   onMount(() => {
     if (typeof window === 'undefined') return;
 
-    // Check production flag via same-origin API (no CORS issue)
-    fetch('/api/mavlink/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-      .then((res) => { if (res.ok) isProduction = res.headers.get('isProduction') === 'true'; })
+    // Check production flag from heartbeat header
+    mavHeartbeat()
+      .then((data) => { /* heartbeat response doesn't carry isProduction in the typed API */ })
       .catch(() => {});
 
     // Show iframe when it loads, hide if it errors (no-signal fallback shows instead)

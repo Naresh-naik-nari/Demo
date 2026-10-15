@@ -15,7 +15,8 @@
     mavBatteryStore,
     mavArmedStateStore,
     mavLocationStore,
-    mavlinkParamStore
+    mavlinkParamStore,
+    mavSatelliteStore
   } from '../stores/mavlinkStore';
   import { darkModeStore, primaryColorStore, secondaryColorStore, tertiaryColorStore } from '../stores/customizationStore';
   import { markersStore } from '../stores/mapStore';
@@ -24,6 +25,8 @@
   import Modal from './Modal.svelte';
   import Notification from './Notification.svelte';
   import type { LatLng } from 'leaflet';
+  import { sendCommand, writeParam } from '$lib/api/mavlink';
+  import { encodeParameterValue } from '$lib/utils/parameters';
 
   // ── Flight Time ───────────────────────────────────────────────────────────
   let flightStartTime: number | null = null;
@@ -196,82 +199,21 @@
     return parseFloat((totalDistance * 1000).toFixed(2)); // Returns distance in meters
   }
 
-  async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-    const response = await fetch(`/api/mavlink/send_command`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': command,
-        'params': params,
-        'useCmdLong': useCmdLong,
-        'useArduPilotMega': useArduPilotMega
-      },
-    });
-    if (response.ok) {
-      console.log(await response.text());
-    } else {
-      console.error(`Error: ${await response.text()}`);
+  async function sendMavlinkCommand(command: string, params: string = '', useCmdLong = false, useArduPilotMega = false) {
+    try {
+      await sendCommand(command, params, useCmdLong, useArduPilotMega);
+    } catch (err) {
+      console.error(`[Stats] sendMavlinkCommand failed (${command}):`, err);
     }
   }
-  
-  function encodeParameterValue(value: number, paramType: number): number {
-    // Ensure the value is within valid range for the type
-    switch (paramType) {
-      case 1: // uint8
-        return Math.min(255, Math.max(0, Math.round(value)));
-      case 2: // int8
-        return Math.min(127, Math.max(-128, Math.round(value)));
-      case 3: // uint16
-        return Math.min(65535, Math.max(0, Math.round(value)));
-      case 4: // int16
-        return Math.min(32767, Math.max(-32768, Math.round(value)));
-      case 5: // uint32
-        return Math.min(4294967295, Math.max(0, Math.round(value)));
-      case 6: // int32
-        return Math.min(2147483647, Math.max(-2147483648, Math.round(value)));
-      case 7: // uint64
-      case 8: // int64
-        console.warn('64-bit integers may not be fully precise in JavaScript');
-        return value;
-      case 9: // float
-        return value;
-      case 10: // double
-        return value;
-      default:
-        console.warn('Unknown parameter type:', paramType);
-        return value;
-      }
-    }
 
-    async function writeParameter(id: string, value: number, type: number) {
-      try {
-        const encodedValue = encodeParameterValue(value, type);
-        
-        // Remove any extra quotes from the parameter ID
-        const cleanId = id.replace(/^"|"$/g, '');
-        
-        console.log('Writing parameter:', {
-          id: cleanId,
-          originalValue: value,
-          encodedValue,
-          type
-        });
-        
-        const response = await fetch('/api/mavlink/write_param', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            'id': cleanId,
-            'value': encodedValue.toString(),
-            'type': type.toString(),
-          },
-        });
-
-        if (!response.ok) throw new Error(await response.text());
-      } catch (err: any) {
-        console.error('Failed to write parameter:', err.message);
-      }
+  async function writeParameter(id: string, value: number, type: number) {
+    try {
+      await writeParam(id, encodeParameterValue(value, type), type);
+    } catch (err: any) {
+      console.error('[Stats] writeParameter failed:', err.message);
     }
+  }
 
   function confirmCalibration() {
     let modal = new Modal({
@@ -293,7 +235,7 @@
           const heading = isNaN(parseInt(modal.inputValues![0])) ? 0 : modal.inputValues![0];
           await sendMavlinkCommand('FIXED_MAG_CAL_YAW', `${heading},0,${mavLocation.lat},${mavLocation.lng}`, 'true');
           await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
-          await sendMavlinkCommand('PREFLIGHT_CALIBRATION', '0,0,0,0,4,0,0', 'true');
+          await sendMavlinkCommand('PREFLIGHT_CALIBRATION', '0,0,0,0,4,0,0', true);
           modal.$destroy();
         }
       }
@@ -310,7 +252,7 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', '1,6', 'true'); // 6 is RTL
+          await sendMavlinkCommand('DO_SET_MODE', '1,6', true); // 6 is RTL
           modal.$destroy();
           const notification = new Notification({
             target: document.body,
@@ -336,7 +278,7 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true'); // 4 is GUIDED
+          await sendMavlinkCommand('DO_SET_MODE', '1,4', true); // 4 is GUIDED
           modal.$destroy();
           const notification = new Notification({
             target: document.body,
@@ -353,60 +295,100 @@
   }
 
   async function startMission() {
-    let encodedValue = encodeParameterValue(get(mavlinkParamStore).RTL_ALT.param_value, get(mavlinkParamStore).RTL_ALT.param_type);
+    const params = get(mavlinkParamStore);
+    const RTL_ALT_CM_DEFAULT = 1500;
+    const rtlAltParam   = params['RTL_ALT'];
+    const rtlClimbParam = params['RTL_CLIMB_MIN'];
+    const currentRtlAltM = rtlAltParam
+      ? encodeParameterValue(rtlAltParam.param_value, rtlAltParam.param_type) / 100
+      : RTL_ALT_CM_DEFAULT / 100;
+
+    if (!missionLoaded) {
+      const n = new Notification({ target: document.body, props: { title: 'No Mission Loaded', content: 'Please save and load a mission plan before starting.', type: 'warning' } });
+      setTimeout(() => n.$destroy(), 6000);
+      return;
+    }
+
     let modal = new Modal({
       target: document.body,
       props: {
-        title: 'Start / Resume Mission',
-        content: 'Are you sure you want to start the mission? Please specify RTL_ALT (Return to Launch Altitude) in METERS. Make sure to consider any potential obstacles between the RTL waypoint and the launch location.',
+        title: '🚀 Arm & Start Mission',
+        content:
+          `<b>Mission:</b> ${missionPlanTitle}<br><br>` +
+          `Sequence:<br>` +
+          `1. Set RTL_ALT (safety altitude on return)<br>` +
+          `2. Arm the vehicle<br>` +
+          `3. Issue NAV_TAKEOFF<br>` +
+          `4. Switch to AUTO mode<br><br>` +
+          `Specify RTL_ALT in <b>metres</b>. Consider obstacles on the return path.`,
         isOpen: true,
         confirmation: true,
         notification: false,
         inputs: [
           {
             type: 'number',
-            placeholder: `RTL_ALT: ${encodedValue / 100} m`,
+            placeholder: `RTL_ALT: ${currentRtlAltM} m`,
             required: true,
           }
         ],
         onConfirm: async () => {
+          // Read inputValues BEFORE destroying the modal — $destroy() clears props
+          const rtlAltInput = modal.inputValues?.[0];
+          modal.$destroy();
           missionIndexStore.set(1);
           missionCompleteStore.set(false);
-          await writeParameter('RTL_ALT', parseInt(modal.inputValues![0]) * 100, get(mavlinkParamStore).RTL_ALT.param_type);
-          await writeParameter('RTL_CLIMB_MIN', 0, get(mavlinkParamStore).RTL_CLIMB_MIN.param_type);
-          if (get(mavStateStore) === 'STANDBY') {
-            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true'); // 4 is GUIDED
-            await new Promise(resolve => setTimeout(resolve, 300));
-            // Disable pre-arm checks (RC not required when using GCS)
-            await fetch('/api/mavlink/write_param', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
-            });
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            // Restore checks
-            await fetch('/api/mavlink/write_param', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
-            });
-            await sendMavlinkCommand('NAV_TAKEOFF', '0,0,0,0,0,0,10', 'true');
-            await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+
+          const rtlAltValueCm = parseInt(rtlAltInput ?? String(currentRtlAltM)) * 100;
+          await writeParameter('RTL_ALT', rtlAltValueCm, rtlAltParam?.param_type ?? 6);
+          if (rtlClimbParam) {
+            await writeParameter('RTL_CLIMB_MIN', 0, rtlClimbParam.param_type);
           }
-          await sendMavlinkCommand('DO_SET_MODE', '1,3', 'true'); // 3 is AUTO Mode
-          modal.$destroy();
-          const notification = new Notification({
-            target: document.body,
-            props: {
-              title: 'Mission Started',
-              content: 'The mission has been started.',
-              type: 'info',
+
+          if (get(mavStateStore) === 'STANDBY') {
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', true); // GUIDED
+            await new Promise(resolve => setTimeout(resolve, 300));
+            await writeParam('ARMING_CHECK', 0, 6);
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', true);
+            // Wait for arm ACK (up to 5 s) instead of fixed delay
+            const armed = await waitForArmed(5000);
+            await writeParam('ARMING_CHECK', 1, 6);
+            if (!armed) {
+              const n = new Notification({ target: document.body, props: { title: 'Arm Failed', content: 'Vehicle did not confirm armed. Check STATUSTEXT messages.', type: 'error' } });
+              setTimeout(() => n.$destroy(), 8000);
+              return;
             }
-          });
-          setTimeout(() => notification.$destroy(), 10000);
+            await sendMavlinkCommand('NAV_TAKEOFF', '0,0,0,0,0,0,10', true);
+            // Wait for altitude (up to 15 s) before switching to AUTO
+            await waitForAltitude(8, 15000);
+          }
+          await sendMavlinkCommand('DO_SET_MODE', '1,3', true); // AUTO
+
+          const n = new Notification({ target: document.body, props: { title: '✅ Mission Started', content: `${missionPlanTitle} is now running in AUTO mode.`, type: 'success' } });
+          setTimeout(() => n.$destroy(), 8000);
         },
       }
     });
+  }
+
+  /** Polls mavArmedStateStore until armed or timeout. */
+  async function waitForArmed(timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (get(mavArmedStateStore)) return true;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return get(mavArmedStateStore);
+  }
+
+  /** Polls mavAltitudeStore until altitude reached or timeout. */
+  async function waitForAltitude(targetAltM: number, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (get(mavAltitudeStore) >= targetAltM) return true;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return false;
   }
 
   function releasePayload() {
@@ -420,12 +402,12 @@
         notification: false,
         onConfirm: async () => {
           if (mavMode !== 'GUIDED') {
-            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', true);
             await new Promise(resolve => setTimeout(resolve, 500));
           }
-          await sendMavlinkCommand('DO_SET_SERVO', '9,1050', 'true'); // Release servo
+          await sendMavlinkCommand('DO_SET_SERVO', '9,1050', true); // Release servo
           await new Promise((resolve) => setTimeout(resolve, 500));
-          await sendMavlinkCommand('DO_SET_SERVO', '9,1950', 'true'); // Open servo
+          await sendMavlinkCommand('DO_SET_SERVO', '9,1950', true); // Open servo
           modal.$destroy();
         },
       }
@@ -449,24 +431,18 @@
           }
         ],
         onConfirm: async () => {
+          // Read inputValues BEFORE any await — async gaps can cause $destroy to be called
+          const takeoffAlt = parseInt(modal.inputValues?.[0] ?? '10') || 10;
           if (mavMode !== 'GUIDED') {
-            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
+            await sendMavlinkCommand('DO_SET_MODE', '1,4', true);
             await new Promise(resolve => setTimeout(resolve, 300));
           }
-          // Disable pre-arm checks before arming
-          await fetch('/api/mavlink/write_param', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
-          });
+          await writeParam('ARMING_CHECK', 0, 6);
           await new Promise(resolve => setTimeout(resolve, 200));
-          await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
+          await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', true);
           await new Promise(resolve => setTimeout(resolve, 1000));
-          // Restore checks
-          await fetch('/api/mavlink/write_param', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
-          });
-          await sendMavlinkCommand('NAV_TAKEOFF', `0,0,0,0,0,0,${parseInt(modal.inputValues![0])}`, 'true');
+          await writeParam('ARMING_CHECK', 1, 6);
+          await sendMavlinkCommand('NAV_TAKEOFF', `0,0,0,0,0,0,${takeoffAlt}`, true);
           modal.$destroy();
         },
       }
@@ -483,7 +459,7 @@
         confirmation: true,
         notification: false,
         onConfirm: async () => {
-          await sendMavlinkCommand('DO_SET_MODE', '1,9', 'true'); // 9 is LAND mode
+          await sendMavlinkCommand('DO_SET_MODE', '1,9', true); // 9 is LAND mode
           modal.$destroy();
         },
       }
@@ -494,30 +470,263 @@
     return target.includes(mode);
   }
 
-  // ArduCopter flight modes
-  const FLIGHT_MODES: { label: string; mode: number }[] = [
-    { label: 'STABILIZE',    mode: 0  },
-    { label: 'ACRO',         mode: 1  },
-    { label: 'ALT_HOLD',     mode: 2  },
-    { label: 'AUTO',         mode: 3  },
-    { label: 'GUIDED',       mode: 4  },
-    { label: 'LOITER',       mode: 5  },
-    { label: 'RTL',          mode: 6  },
-    { label: 'CIRCLE',       mode: 7  },
-    { label: 'LAND',         mode: 9  },
-    { label: 'POSHOLD',      mode: 16 },
-    { label: 'BRAKE',        mode: 17 },
-    { label: 'THROW',        mode: 18 },
-    { label: 'GUIDED_NOGPS', mode: 20 },
-    { label: 'MANUAL',       mode: 22 },
+  // ── ArduCopter flight modes ───────────────────────────────────────────────
+  // Source: https://ardupilot.org/copter/docs/flight-modes.html
+  // Mode numbers from CopterMode enum in mavlink-mappings/dist/lib/ardupilotmega
+  //
+  // Columns:
+  //   label      — enum name returned by HEARTBEAT.customMode via CopterMode[]
+  //   mode       — integer value sent in DO_SET_MODE param2
+  //   gpsRequired— true = vehicle must have 3D GPS lock + HDOP < 2.0 to enter
+  //   altCtrl    — true = autopilot holds altitude automatically
+  //   posCtrl    — true = autopilot holds horizontal position automatically
+  //   description— one-line summary from ArduPilot docs
+  //   warning    — shown in the confirmation dialog if non-empty
+  interface FlightMode {
+    label: string;
+    mode: number;
+    gpsRequired: boolean;
+    altCtrl: boolean;
+    posCtrl: boolean;
+    description: string;
+    warning?: string;
+  }
+
+  const FLIGHT_MODES: FlightMode[] = [
+    // ── Basic / manual ────────────────────────────────────────────────────────
+    {
+      label: 'STABILIZE', mode: 0,
+      gpsRequired: false, altCtrl: false, posCtrl: false,
+      description: 'Self-levels roll & pitch; manual throttle and altitude.',
+    },
+    {
+      label: 'ACRO', mode: 1,
+      gpsRequired: false, altCtrl: false, posCtrl: false,
+      description: 'Rate-controlled; sticks control rotation rate, no auto-level.',
+      warning: 'Most difficult mode. Vehicle will not self-level when sticks are released.',
+    },
+    {
+      label: 'ALT_HOLD', mode: 2,
+      gpsRequired: false, altCtrl: true, posCtrl: false,
+      description: 'Holds altitude automatically; manual roll, pitch and yaw.',
+    },
+    {
+      label: 'SPORT', mode: 13,
+      gpsRequired: false, altCtrl: true, posCtrl: false,
+      description: 'Rate-controlled stabilize + altitude hold. Holds attitude on stick release.',
+    },
+    {
+      label: 'DRIFT', mode: 11,
+      gpsRequired: true, altCtrl: false, posCtrl: false,
+      description: 'Plane-like coordinated turns; autopilot handles roll during yaw inputs.',
+    },
+    {
+      label: 'FLIP', mode: 14,
+      gpsRequired: false, altCtrl: false, posCtrl: false,
+      description: 'Executes an automated flip then returns to previous mode.',
+      warning: 'Requires at least 10 m of altitude. Vehicle will flip immediately on entry.',
+    },
+
+    // ── GPS position-hold ─────────────────────────────────────────────────────
+    {
+      label: 'LOITER', mode: 5,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Holds altitude and position using GPS. Sticks adjust position.',
+    },
+    {
+      label: 'POSHOLD', mode: 16,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Like Loiter but sticks directly control lean angle instead of speed.',
+    },
+    {
+      label: 'CIRCLE', mode: 7,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Orbits a point CIRCLE_RADIUS_M metres in front of the vehicle.',
+    },
+    {
+      label: 'FLOWHOLD', mode: 22,
+      gpsRequired: false, altCtrl: true, posCtrl: true,
+      description: 'Position hold using optical flow sensor — no GPS required.',
+    },
+
+    // ── Autonomous ────────────────────────────────────────────────────────────
+    {
+      label: 'AUTO', mode: 3,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Executes pre-programmed waypoint mission stored in the FC.',
+    },
+    {
+      label: 'GUIDED', mode: 4,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Navigates to single points commanded by GCS in real time.',
+    },
+    {
+      label: 'GUIDED_NOGPS', mode: 20,
+      gpsRequired: false, altCtrl: false, posCtrl: false,
+      description: 'Guided mode accepting only attitude targets — no GPS required.',
+    },
+    {
+      label: 'BRAKE', mode: 17,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Stops the vehicle as quickly as possible. No pilot input accepted.',
+    },
+    {
+      label: 'FOLLOW', mode: 23,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Follows another vehicle broadcasting its MAVLink position.',
+    },
+    {
+      label: 'ZIGZAG', mode: 24,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Semi-autonomous back-and-forth sweeps for crop spraying.',
+    },
+
+    // ── Return / landing ──────────────────────────────────────────────────────
+    {
+      label: 'RTL', mode: 6,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Returns above home at RTL_ALT_M, loiters, then lands.',
+    },
+    {
+      label: 'SMART_RTL', mode: 21,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'RTL but retraces the outbound path to avoid obstacles.',
+    },
+    {
+      label: 'LAND', mode: 9,
+      gpsRequired: false, altCtrl: true, posCtrl: false,
+      description: 'Descends straight down and auto-disarms on touchdown.',
+    },
+    {
+      label: 'AUTO_RTL', mode: 27,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'RTL initiated from within a mission (AUTO mode sub-state).',
+    },
+
+    // ── Advanced / special ────────────────────────────────────────────────────
+    {
+      label: 'AUTOTUNE', mode: 15,
+      gpsRequired: false, altCtrl: true, posCtrl: false,
+      description: 'Automated pitch/roll PID tuning procedure. Fly away from obstacles.',
+      warning: 'Vehicle will make sudden automated movements to measure response. Maintain safe distance.',
+    },
+    {
+      label: 'THROW', mode: 18,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Arm, then throw the vehicle; motors start at apex of throw.',
+      warning: 'Dangerous — do not stand near an armed vehicle. Motors start automatically.',
+    },
+    {
+      label: 'AVOID_ADSB', mode: 19,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Automatic avoidance of manned aircraft via ADS-B. Not pilot-selectable.',
+      warning: 'This mode should only be engaged by the autopilot via ADS-B failsafe, not manually.',
+    },
+    {
+      label: 'SYSTEMID', mode: 25,
+      gpsRequired: false, altCtrl: false, posCtrl: false,
+      description: 'Special diagnostic mode for system identification and modelling.',
+      warning: 'For advanced users and developers only. Vehicle responds to automated test inputs.',
+    },
+    {
+      label: 'AUTOROTATE', mode: 26,
+      gpsRequired: true, altCtrl: true, posCtrl: true,
+      description: 'Emergency autorotation for traditional helicopters (SITL only).',
+      warning: 'Helicopter-only mode. Has no effect on multirotors.',
+    },
+  ];
+
+  // Group modes for the dropdown UI
+  const MODE_GROUPS: { group: string; modes: FlightMode[] }[] = [
+    {
+      group: 'Manual',
+      modes: FLIGHT_MODES.filter(m => ['STABILIZE','ACRO','SPORT','DRIFT','FLIP'].includes(m.label)),
+    },
+    {
+      group: 'Altitude Hold',
+      modes: FLIGHT_MODES.filter(m => ['ALT_HOLD','FLOWHOLD'].includes(m.label)),
+    },
+    {
+      group: 'Position Hold',
+      modes: FLIGHT_MODES.filter(m => ['LOITER','POSHOLD','CIRCLE'].includes(m.label)),
+    },
+    {
+      group: 'Autonomous',
+      modes: FLIGHT_MODES.filter(m => ['AUTO','GUIDED','GUIDED_NOGPS','BRAKE','FOLLOW','ZIGZAG'].includes(m.label)),
+    },
+    {
+      group: 'Return / Land',
+      modes: FLIGHT_MODES.filter(m => ['RTL','SMART_RTL','LAND','AUTO_RTL'].includes(m.label)),
+    },
+    {
+      group: 'Advanced',
+      modes: FLIGHT_MODES.filter(m => ['AUTOTUNE','THROW','AVOID_ADSB','SYSTEMID','AUTOROTATE'].includes(m.label)),
+    },
   ];
 
   let modeDropdownOpen = false;
 
-  async function setFlightMode(modeNum: number) {
+  /**
+   * Requests a flight mode change via DO_SET_MODE.
+   * Shows a confirmation dialog for modes with a warning, and validates
+   * GPS requirements against current satellite state before switching.
+   */
+  async function setFlightMode(flightMode: FlightMode) {
     modeDropdownOpen = false;
-    await sendMavlinkCommand('DO_SET_MODE', `1,${modeNum}`, 'true');
-    console.log(`Flight mode set to ${modeNum}`);
+
+    const { label, mode, gpsRequired, warning } = flightMode;
+
+    // GPS check — warn if mode needs position but GPS quality is insufficient
+    const { total: sats, hdop } = get(mavSatelliteStore);
+    if (gpsRequired && (sats < 6 || hdop > 2.0)) {
+      const modal = new Modal({
+        target: document.body,
+        props: {
+          title: `⚠️ GPS Required — ${label}`,
+          content: `${label} requires a good GPS lock (≥6 satellites, HDOP &lt; 2.0).<br><br>Current: <b>${sats} sats, HDOP ${hdop.toFixed(2)}</b>.<br><br>Switching anyway may cause unexpected behaviour.`,
+          isOpen: true,
+          confirmation: true,
+          notification: false,
+          onConfirm: async () => {
+            modal.$destroy();
+            await doSetMode(mode, label);
+          },
+          onCancel: () => modal.$destroy(),
+        },
+      });
+      return;
+    }
+
+    // Warning confirmation for dangerous / advanced modes
+    if (warning) {
+      const modal = new Modal({
+        target: document.body,
+        props: {
+          title: `Switch to ${label}?`,
+          content: `${warning}`,
+          isOpen: true,
+          confirmation: true,
+          notification: false,
+          onConfirm: async () => {
+            modal.$destroy();
+            await doSetMode(mode, label);
+          },
+          onCancel: () => modal.$destroy(),
+        },
+      });
+      return;
+    }
+
+    await doSetMode(mode, label);
+  }
+
+  async function doSetMode(modeNum: number, label: string) {
+    try {
+      await sendMavlinkCommand('DO_SET_MODE', `1,${modeNum}`, true);
+      console.log(`[Stats] Flight mode → ${label} (${modeNum})`);
+    } catch (err) {
+      console.error('[Stats] setFlightMode failed:', err);
+    }
   }
 
   // ARM / DISARM — 2-click confirm to prevent accidents
@@ -533,23 +742,19 @@
     }
     armConfirmStep = false;
     if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
-    // Switch to GUIDED first
-    await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-    await new Promise(resolve => setTimeout(resolve, 300));
-    // Disable pre-arm checks so missing RC won't block arming
-    await fetch('/api/mavlink/write_param', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
-    });
+    // Only switch to GUIDED when arming from the ground (STANDBY).
+    // If the vehicle is already airborne (ACTIVE/CRITICAL) do NOT override the
+    // current mode — the pilot may have deliberately selected LOITER or another mode.
+    if (get(mavStateStore) === 'STANDBY' || get(mavStateStore) === 'Unknown') {
+      await sendMavlinkCommand('DO_SET_MODE', '1,4', true); // GUIDED for ground arming
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    // Disable pre-arm checks so missing RC won't block arming from GCS
+    await writeParam('ARMING_CHECK', 0, 6);
     await new Promise(resolve => setTimeout(resolve, 200));
-    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', 'true');
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', true);
     // Restore checks after arm
-    setTimeout(() => {
-      fetch('/api/mavlink/write_param', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
-      });
-    }, 1000);
+    setTimeout(() => { writeParam('ARMING_CHECK', 1, 6); }, 1000);
   }
 
   async function disarmVehicle() {
@@ -561,7 +766,7 @@
     }
     armConfirmStep = false;
     if (armConfirmTimer) { clearTimeout(armConfirmTimer); armConfirmTimer = null; }
-    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '0,21196', 'true');
+    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '0,21196', true);
   }
 </script>
 
@@ -569,30 +774,8 @@
   class="stats p-4 rounded-2xl flex flex-col space-y-2 h-full overflow-y-auto overflow-x-hidden text-sm"
   style="--primaryColor: {primaryColor}; --secondaryColor: {secondaryColor}; --tertiaryColor: {tertiaryColor}; --fontColor: {fontColor};"
 >
-  <h2 class="text-lg font-bold">
-    <a href="https://mavlink.io/en/messages/common.html#MAV_AUTOPILOT" target="_blank" title="More Information">
-      <i class="fas fa-info-circle text-gray-500 hover:text-[#62bbff] mr-[0.2em]"></i>
-    </a>
-    <span class="text-gray-500">Autopilot Model:</span>&nbsp;{mavModel}
-  </h2>
-  <hr />
   <div class="h-full flex flex-col justify-evenly">
     <div class="grid grid-cols-2 gap-2">
-      <div>MAV Type: {mavType}</div>
-      <div>System State: {systemState}</div>
-      <div>Speed: {speed} m/s</div>
-      <div>Altitude: {altitude} m</div>
-      <div class="battery-status {batteryStatus === null ? 'red' : ''} {batteryStatus !== null && batteryStatus < 20 ? 'red' : batteryStatus !== null && batteryStatus < 50 ? 'yellow' : 'green'}">Battery Status: {batteryStatus !== null ? batteryStatus : '--'}%</div>
-      <div class="flight-time-display col-span-2 grid grid-cols-2 gap-2 mt-1 p-2 rounded-lg">
-        <div class="flight-time-item">
-          <span class="ft-label"><i class="fas fa-stopwatch"></i> Flight Time</span>
-          <span class="ft-value {flightStartTime ? 'active' : ''}">{formatFlightTime(flightElapsedSec)}</span>
-        </div>
-        <div class="flight-time-item">
-          <span class="ft-label"><i class="fas fa-battery-half"></i> Est. Remaining</span>
-          <span class="ft-value">{estimateRemainingTime(batteryStatus, flightElapsedSec)}</span>
-        </div>
-      </div>
       <div class="relative flex items-center gap-1">
         <span>Mode:</span>
         <div class="mode-dropdown relative">
@@ -611,20 +794,31 @@
             <!-- svelte-ignore a11y-click-events-have-key-events -->
             <!-- svelte-ignore a11y-no-static-element-interactions -->
             <div class="mode-backdrop fixed inset-0 z-10" on:click={() => modeDropdownOpen = false}></div>
-            <ul class="mode-list absolute left-0 z-20 mt-1 py-1 rounded-xl shadow-lg min-w-[9rem]" role="listbox">
-              {#each FLIGHT_MODES as { label, mode }}
-                <li role="option" aria-selected={mavMode === label}>
-                  <button
-                    class="mode-item w-full text-left px-3 py-1.5 text-xs flex items-center justify-between gap-2
-                      {mavMode === label ? 'mode-item-active' : ''}"
-                    on:click={() => setFlightMode(mode)}
-                  >
-                    <span>{label}</span>
-                    {#if mavMode === label}
-                      <i class="fas fa-check text-[9px] text-blue-400"></i>
-                    {/if}
-                  </button>
-                </li>
+            <ul class="mode-list absolute left-0 z-20 mt-1 py-1 rounded-xl shadow-lg min-w-[11rem] max-h-80 overflow-y-auto" role="listbox">
+              {#each MODE_GROUPS as { group, modes }}
+                <li class="mode-group-label px-3 pt-2 pb-0.5 text-[8px] uppercase tracking-widest opacity-50 font-bold select-none">{group}</li>
+                {#each modes as fm}
+                  <li role="option" aria-selected={mavMode === fm.label} title={fm.description}>
+                    <button
+                      class="mode-item w-full text-left px-3 py-1.5 text-xs flex items-center justify-between gap-2
+                        {mavMode === fm.label ? 'mode-item-active' : ''}"
+                      on:click={() => setFlightMode(fm)}
+                    >
+                      <span class="flex items-center gap-1">
+                        {#if fm.gpsRequired}
+                          <i class="fas fa-satellite text-[8px] opacity-50" title="GPS required"></i>
+                        {/if}
+                        {#if fm.warning}
+                          <i class="fas fa-exclamation-triangle text-[8px] text-yellow-400" title={fm.warning}></i>
+                        {/if}
+                        {fm.label}
+                      </span>
+                      {#if mavMode === fm.label}
+                        <i class="fas fa-check text-[9px] text-blue-400"></i>
+                      {/if}
+                    </button>
+                  </li>
+                {/each}
               {/each}
             </ul>
           {/if}
@@ -692,7 +886,7 @@
                 disabled={!checkMode('AUTO', mavMode) || !missionLoaded}
               >
                 <i class="fas fa-pause"></i>
-                <div class="tooltip text-white">Pause Mission (Loiter)</div>
+                <div class="tooltip text-white">Pause Mission (POSHOLD)</div>
               </button>
             </div>
           {/if}
@@ -738,56 +932,6 @@
     to {
       background-position: 30px 0;
     }
-  }
-
-  .battery-status {
-    color: var(--fontColor);
-  }
-  .battery-status.green {
-    color: green;
-  }
-  .battery-status.yellow {
-    color: #e7b908;
-  }
-  .battery-status.red {
-    color: red;
-  }
-
-  .flight-time-display {
-    background-color: var(--secondaryColor);
-    border: 1px solid var(--tertiaryColor);
-    border-radius: 0.5rem;
-  }
-
-  .flight-time-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-  }
-
-  .ft-label {
-    font-size: 0.65rem;
-    opacity: 0.6;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .ft-value {
-    font-size: 0.9rem;
-    font-weight: 700;
-    font-family: 'Courier New', monospace;
-    color: #66e1ff;
-  }
-
-  .ft-value.active {
-    color: #00ff88;
-    animation: ft-pulse 2s ease-in-out infinite;
-  }
-
-  @keyframes ft-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
   }
 
   .button-container {
@@ -859,8 +1003,13 @@
   .mode-list {
     background-color: var(--primaryColor);
     border: 1px solid var(--tertiaryColor);
-    max-height: 220px;
+    max-height: 320px;
     overflow-y: auto;
+  }
+
+  .mode-group-label {
+    color: var(--fontColor);
+    pointer-events: none;
   }
 
   .mode-item {

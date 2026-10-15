@@ -48,7 +48,7 @@
     // Navigation
     { id: 'gps', category: 'Navigation', name: 'GPS Lock', status: 'checking', message: 'Waiting for GPS...', critical: true },
     { id: 'satellites', category: 'Navigation', name: 'Satellite Count', status: 'checking', message: 'Checking satellites...', critical: true },
-    { id: 'hdop', category: 'Navigation', name: 'GPS Accuracy (HDOP)', status: 'checking', message: 'Checking HDOP...', critical: false },
+    { id: 'hdop', category: 'Navigation', name: 'GPS Accuracy (HDOP)', status: 'checking', message: 'Checking HDOP...', critical: true },
     { id: 'compass', category: 'Navigation', name: 'Compass Calibration', status: 'checking', message: 'Checking compass...', critical: true },
     
     // Sensors
@@ -132,12 +132,15 @@
         break;
 
       case 'gps':
+        // Loiter requires 3D GPS lock. ArduPilot considers fix_type >= 3 as 3D lock.
+        // We approximate from satellite count and HDOP — a full fix_type check
+        // would require parsing GPS_RAW_INT.fixType from the MAVLink stream.
         if (satellites.total === 0) {
-          updateCheck('fail', 'No GPS lock');
-        } else if (satellites.total < 6) {
-          updateCheck('warning', `Weak GPS: ${satellites.total} satellites`);
+          updateCheck('fail', 'No GPS — 3D lock required for Loiter mode');
+        } else if (satellites.total < 6 || satellites.hdop > 5.0) {
+          updateCheck('warning', `GPS weak: ${satellites.total} sats, HDOP ${satellites.hdop.toFixed(2)} — may not have 3D lock`);
         } else {
-          updateCheck('pass', `GPS locked: ${satellites.total} satellites`);
+          updateCheck('pass', `GPS 3D lock: ${satellites.total} satellites`);
         }
         break;
 
@@ -152,14 +155,14 @@
         break;
 
       case 'hdop':
-        if (satellites.hdop > 20) {
-          updateCheck('warning', `Poor accuracy: HDOP ${satellites.hdop.toFixed(1)}`);
-        } else if (satellites.hdop > 10) {
-          updateCheck('warning', `Fair accuracy: HDOP ${satellites.hdop.toFixed(1)}`);
-        } else if (satellites.hdop > 5) {
-          updateCheck('pass', `Good accuracy: HDOP ${satellites.hdop.toFixed(1)}`);
+        // ArduPilot requires HDOP < 1.4 to arm in Loiter mode.
+        // https://ardupilot.org/copter/docs/loiter-mode.html
+        if (satellites.hdop > 1.4) {
+          updateCheck('fail', `HDOP too high for Loiter: ${satellites.hdop.toFixed(2)} (need < 1.4)`);
+        } else if (satellites.hdop > 1.0) {
+          updateCheck('warning', `HDOP marginal: ${satellites.hdop.toFixed(2)} (Loiter requires < 1.4)`);
         } else {
-          updateCheck('pass', `Excellent accuracy: HDOP ${satellites.hdop.toFixed(1)}`);
+          updateCheck('pass', `HDOP excellent: ${satellites.hdop.toFixed(2)}`);
         }
         break;
 

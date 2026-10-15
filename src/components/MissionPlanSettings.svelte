@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { mapStore} from "../stores/mapStore";
     import {
         missionPlanTitleStore,
@@ -17,6 +17,12 @@
     import { get } from "svelte/store";
     import { onMount } from "svelte";
     import Notification from "./Notification.svelte";
+    import { sendCommand, clearMission, loadMission } from '$lib/api/mavlink';
+    import {
+        listMissions, loadMissionRecord, unloadAllMissions,
+        saveMission, updateMission, missionExists, upsertMission,
+        type MissionRecord
+    } from '$lib/api/mission';
 
     let actions: MissionPlanActions = get(missionPlanActionsStore);
     let title: string = "";
@@ -30,24 +36,6 @@
     $: secondaryColor = $secondaryColorStore;
     $: tertiaryColor = $tertiaryColorStore;
     $: fontColor = darkMode ? "#ffffff" : "#000000";
-
-    async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-        const response = await fetch(`/api/mavlink/send_command`, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-                'command': command,
-                'params': params,
-                'useCmdLong': useCmdLong,
-                'useArduPilotMega': useArduPilotMega
-            },
-        });
-        if (response.ok) {
-            console.log(await response.text());
-        } else {
-            console.error(`Error: ${await response.text()}`);
-        }
-    }
 
     function toggleMissionPlans() {
         const modal = new ManageMissionPlans({
@@ -84,177 +72,48 @@
     }
 
     async function handleLoad(title: string, actions: MissionPlanActions) {
-        sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-
-        // Clear the current mission plan
         try {
-            let response = await fetch("/api/mavlink/clear_mission", {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                },
-            });
-            if (response.ok) {
-                console.log(await response.text());
-            } else {
-                console.error(`Error: ${await response.text()}`);
-            }
-        } catch (error) {
-            console.error("Error:", error);
+            await sendCommand('DO_SET_MODE', [1, 4], true); // GUIDED
+            await clearMission();
+            await unloadAllMissions();
+            await loadMissionRecord(title);
+            missionPlanTitleStore.set(title);
+            missionPlanActionsStore.set(actions);
+            missionCompleteStore.set(false);
+            await loadMission(actions);
+        } catch (err) {
+            console.error('[MissionPlanSettings] handleLoad failed:', err);
         }
-        
-        // Unload all mission plans first
-        await fetch("/api/mission/unload", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-            },
-        });
-
-        // Load the new mission plan
-        await fetch("/api/mission/load", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "title": title,
-            },
-        });
-
-        missionPlanTitleStore.set(title);
-        missionPlanActionsStore.set(actions);
-        missionCompleteStore.set(false);
-        try {
-            let response = await fetch("/api/mavlink/load_mission", {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                    "actions": JSON.stringify(actions),
-                },
-            });
-            if (response.ok) {
-                console.log(await response.text());
-            } else {
-                console.error(`Error: ${await response.text()}`);
-            }
-        } catch (error) {
-            console.error("Error:", error);
-        }
-    }
-        
-    function duplicateTakeoffAndShift(actions: Record<string, any>): Record<string, any> {
-        const newActions: Record<string, any> = {};
-        
-        // First, add the duplicated takeoff points
-        newActions['0'] = { ...actions['1'] };
-        newActions['1'] = { ...actions['1'] };
-        
-        // Then shift the remaining points up
-        Object.keys(actions).forEach((key, index) => {
-            if (key !== '0' && key !== '1') {
-                newActions[(parseInt(key)).toString()] = { ...actions[key] };
-            }
-        });
-        
-        return newActions;
     }
 
     async function handleSave(title: string, plan: MissionPlanActions) {
         plan = duplicateTakeoffAndShift(plan);
-        handleLoad(title, plan);
-
-        let missionExists = false;
-        let response = await fetch("/api/mission/checkExists", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "title": title,
-            },
-        });
-        let responseData = await response.json();
-        console.log(responseData);
-        if (responseData.length > 0) missionExists = true;
-
-        if (missionExists) {
-            await handleUpdate(title, plan);
-        } else {
-            let missionPlan = {
-                title: title,
-                actions: plan,
-                isLoaded: 1,
-            };
-            let response = await fetch("/api/mission/save", {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                    "title": missionPlan.title,
-                    "actions": JSON.stringify(missionPlan.actions),
-                },
-            }).catch((error) => {
-                new Modal({
-                    target: document.body,
-                    props: {
-                        title: "Error",
-                        content: error.message,
-                        isOpen: true,
-                        confirmation: false,
-                        notification: true,
-                    },
-                });
-            });
-            if (response) {
-              let notification = new Notification({
+        await handleLoad(title, plan);
+        try {
+            await upsertMission(title, plan);
+            const notification = new Notification({
                 target: document.body,
-                props: {
-                    title: "Mission Plan Saved",
-                    content: "The mission plan has been saved.",
-                    type: "info",
-                },
-              });
-              setTimeout(() => {
-                  notification.$destroy();
-              }, 3000);
-            }
+                props: { title: 'Mission Plan Saved', content: 'The mission plan has been saved.', type: 'info' },
+            });
+            setTimeout(() => notification.$destroy(), 3000);
+        } catch (err: any) {
+            new Modal({
+                target: document.body,
+                props: { title: 'Error', content: err.message, isOpen: true, confirmation: false, notification: true },
+            });
         }
     }
 
-    async function handleUpdate(title: string, plan: MissionPlanActions) {
-        let missionPlan = {
-            title: title,
-            actions: plan,
-            isLoaded: 1,
-        };
-        let response = await fetch("/api/mission/update", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "title": missionPlan.title,
-                "actions": JSON.stringify(missionPlan.actions),
-            },
-        }).catch((error) => {
-            new Modal({
-                target: document.body,
-                props: {
-                    title: "Error",
-                    content: error.message,
-                    isOpen: true,
-                    confirmation: false,
-                    notification: true,
-                },
-            });
+    function duplicateTakeoffAndShift(actions: Record<string, any>): Record<string, any> {
+        const newActions: Record<string, any> = {};
+        newActions['0'] = { ...actions['1'] };
+        newActions['1'] = { ...actions['1'] };
+        Object.keys(actions).forEach((key) => {
+            if (key !== '0' && key !== '1') {
+                newActions[(parseInt(key)).toString()] = { ...actions[key] };
+            }
         });
-        if (response) {
-            let notification = new Notification({
-                target: document.body,
-                props: {
-                title: "Mission Plan Updated",
-                content: "The mission plan has been updated.",
-                type: "info",
-                },
-            });
-            setTimeout(() => {
-                notification.$destroy();
-            }, 3000);
-        }
+        return newActions;
     }
 
     async function importPlan() {
@@ -387,40 +246,18 @@
                         alt = 0;
                     }
                     try {
-                        let response = await fetch("/api/mavlink/send_command", {
-                            method: "POST",
-                            headers: {
-                                "content-type": "application/json",
-                                "command": "DO_SET_HOME",
-                                "params": `${[useCurrent, 0, 0, 0, lat, lon, alt]}`
+                        await sendCommand('DO_SET_HOME', [useCurrent, 0, 0, 0, lat, lon, alt]);
+                        let newModal = new Modal({
+                            target: document.body,
+                            props: {
+                                title: "Home Location Set",
+                                content: "The home location has been set successfully.",
+                                isOpen: true,
+                                confirmation: false,
+                                notification: true,
                             },
                         });
-                        if (response.ok) {
-                            let newModal = new Modal({
-                                target: document.body,
-                                props: {
-                                    title: "Home Location Set",
-                                    content: "The home location has been set successfully.",
-                                    isOpen: true,
-                                    confirmation: false,
-                                    notification: true,
-                                },
-                            });
-                            setTimeout(() => {
-                                newModal.$destroy();
-                            }, 3000);
-                        } else {
-                            new Modal({
-                                target: document.body,
-                                props: {
-                                    title: "Error",
-                                    content: "An error occurred while setting the home location.",
-                                    isOpen: true,
-                                    confirmation: false,
-                                    notification: true,
-                                },
-                            });
-                        }
+                        setTimeout(() => { newModal.$destroy(); }, 3000);
                     } catch (error: any) {
                         new Modal({
                             target: document.body,

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { mavLocationStore, mavModeStore, mavStateStore, mavlinkParamStore } from '../stores/mavlinkStore';
+  import { mavLocationStore, mavModeStore, mavStateStore, mavlinkParamStore, mavArmedStateStore, mavAltitudeStore } from '../stores/mavlinkStore';
   import {
     missionPlanTitleStore,
     missionPlanActionsStore,
@@ -17,6 +17,8 @@
     secondaryColorStore,
     tertiaryColorStore
   } from '../stores/customizationStore';
+  import { sendCommand, writeParam } from '$lib/api/mavlink';
+  import { encodeParameterValue } from '$lib/utils/parameters';
 
   export let title: string = '';
   let actions: MissionPlanActions = {};
@@ -50,80 +52,19 @@
     input.addEventListener('input', resizeInput);
   });
 
-  async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-    const response = await fetch(`/api/mavlink/send_command`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': command,
-        'params': params,
-        'useCmdLong': useCmdLong,
-        'useArduPilotMega': useArduPilotMega
-      },
-    });
-    if (response.ok) {
-      console.log(await response.text());
-    } else {
-      console.error(`Error: ${await response.text()}`);
-    }
-  }
-  
-  function encodeParameterValue(value: number, paramType: number): number {
-    // Ensure the value is within valid range for the type
-    switch (paramType) {
-      case 1: // uint8
-        return Math.min(255, Math.max(0, Math.round(value)));
-      case 2: // int8
-        return Math.min(127, Math.max(-128, Math.round(value)));
-      case 3: // uint16
-        return Math.min(65535, Math.max(0, Math.round(value)));
-      case 4: // int16
-        return Math.min(32767, Math.max(-32768, Math.round(value)));
-      case 5: // uint32
-        return Math.min(4294967295, Math.max(0, Math.round(value)));
-      case 6: // int32
-        return Math.min(2147483647, Math.max(-2147483648, Math.round(value)));
-      case 7: // uint64
-      case 8: // int64
-        console.warn('64-bit integers may not be fully precise in JavaScript');
-        return value;
-      case 9: // float
-        return value;
-      case 10: // double
-        return value;
-      default:
-        console.warn('Unknown parameter type:', paramType);
-        return value;
+  async function sendMavlinkCommand(command: string, params: string = '', useCmdLong = false, useArduPilotMega = false) {
+    try {
+      await sendCommand(command, params, useCmdLong, useArduPilotMega);
+    } catch (err) {
+      console.error(`[MissionPlan] sendMavlinkCommand failed (${command}):`, err);
     }
   }
 
   async function writeParameter(id: string, value: number, type: number) {
     try {
-      const encodedValue = encodeParameterValue(value, type);
-      
-      // Remove any extra quotes from the parameter ID
-      const cleanId = id.replace(/^"|"$/g, '');
-      
-      console.log('Writing parameter:', {
-        id: cleanId,
-        originalValue: value,
-        encodedValue,
-        type
-      });
-      
-      const response = await fetch('/api/mavlink/write_param', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'id': cleanId,
-          'value': encodedValue.toString(),
-          'type': type.toString(),
-        },
-      });
-
-      if (!response.ok) throw new Error(await response.text());
+      await writeParam(id, encodeParameterValue(value, type), type);
     } catch (err: any) {
-      console.error('Failed to write parameter:', err.message);
+      console.error('[MissionPlan] writeParameter failed:', err.message);
     }
   }
 
@@ -179,58 +120,118 @@
     });
   }
 
-  function startMission() {
-    let encodedValue = encodeParameterValue(get(mavlinkParamStore).RTL_ALT.param_value, get(mavlinkParamStore).RTL_ALT.param_type);
+  // ── Mission execution helpers ─────────────────────────────────────────────
+
+  /**
+   * Polls `mavArmedStateStore` until the vehicle confirms armed or the timeout expires.
+   * Returns true if armed within the timeout, false if it timed out.
+   */
+  async function waitForArmed(timeoutMs = 5000): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (get(mavArmedStateStore)) return true;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return get(mavArmedStateStore); // final check
+  }
+
+  /**
+   * Polls `mavAltitudeStore` until the vehicle reaches at least `targetAltM` metres
+   * or the timeout expires. Used to confirm takeoff before switching to AUTO.
+   */
+  async function waitForAltitude(targetAltM: number, timeoutMs = 15000): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (get(mavAltitudeStore) >= targetAltM) return true;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return false;
+  }
+
+  async function startMission() {
+    const params        = get(mavlinkParamStore);
+    const rtlAltParam   = params['RTL_ALT'];
+    const rtlClimbParam = params['RTL_CLIMB_MIN'];
+    const currentRtlAltM = rtlAltParam
+      ? encodeParameterValue(rtlAltParam.param_value, rtlAltParam.param_type) / 100
+      : 15; // safe default: 15 m
+
+    // Check a mission is loaded before showing the dialog
+    if (!missionLoaded) {
+      const n = new Notification({ target: document.body, props: { title: 'No Mission Loaded', content: 'Please save and load a mission plan before starting.', type: 'warning' } });
+      setTimeout(() => n.$destroy(), 6000);
+      return;
+    }
+
     let modal = new Modal({
       target: document.body,
       props: {
-        title: 'Start / Resume Mission',
-        content: 'Are you sure you want to start the mission? Please specify RTL_ALT (Return to Launch Altitude) in METERS. Make sure to consider any potential obstacles between the RTL waypoint and the launch location.',
+        title: '🚀 Arm & Start Mission',
+        content:
+          `<b>Mission:</b> ${get(missionPlanTitleStore)}<br><br>` +
+          `Sequence:<br>` +
+          `1. Set RTL_ALT (safety altitude on return)<br>` +
+          `2. Arm the vehicle<br>` +
+          `3. Issue NAV_TAKEOFF<br>` +
+          `4. Switch to AUTO mode<br><br>` +
+          `Specify RTL_ALT in <b>metres</b>. Consider obstacles on the return path.`,
         isOpen: true,
         confirmation: true,
         notification: false,
         inputs: [
           {
             type: 'number',
-            placeholder: `RTL_ALT: ${encodedValue / 100} m`,
+            placeholder: `RTL_ALT: ${currentRtlAltM} m`,
             required: true,
           }
         ],
         onConfirm: async () => {
+          // Read inputValues BEFORE destroying the modal — $destroy() clears props
+          const rtlAltInput = modal.inputValues?.[0];
+          modal.$destroy();
           missionIndexStore.set(1);
           missionCompleteStore.set(false);
-          await writeParameter('RTL_ALT', parseInt(modal.inputValues![0]) * 100, get(mavlinkParamStore).RTL_ALT.param_type);
-          await writeParameter('RTL_CLIMB_MIN', 0, get(mavlinkParamStore).RTL_CLIMB_MIN.param_type);
-          if (get(mavStateStore) === 'STANDBY') {
-            await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED
-            await new Promise(resolve => setTimeout(resolve, 300));
-            // Disable pre-arm checks (no RC transmitter required from GCS)
-            await fetch('/api/mavlink/write_param', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '0', 'type': '6' }
-            });
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, 'true'); // param2: 21196 force flag
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            // Restore checks
-            await fetch('/api/mavlink/write_param', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'id': 'ARMING_CHECK', 'value': '1', 'type': '6' }
-            });
-            await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, 'true'); // Takeoff to 10m
-            await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+
+          // Step 1 — Write RTL_ALT and RTL_CLIMB_MIN
+          const rtlAltValueCm = parseInt(rtlAltInput ?? String(currentRtlAltM)) * 100;
+          await writeParameter('RTL_ALT', rtlAltValueCm, rtlAltParam?.param_type ?? 6);
+          if (rtlClimbParam) {
+            await writeParameter('RTL_CLIMB_MIN', 0, rtlClimbParam.param_type);
           }
-          await sendMavlinkCommand('DO_SET_MODE', `${[1, 3]}`, 'true'); // 3 is AUTO Mode: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-          modal.$destroy();
+
+          if (get(mavStateStore) === 'STANDBY') {
+            // Step 2 — Switch to GUIDED (required before arming from GCS)
+            await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, true);
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            // Step 3 — Disable ARMING_CHECK (no RC required when arming from GCS)
+            await writeParam('ARMING_CHECK', 0, 6);
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Step 4 — Arm
+            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, true);
+
+            // Step 5 — Wait for arm confirmation (up to 5 s) instead of a fixed delay
+            await waitForArmed(5000);
+
+            // Step 6 — Restore ARMING_CHECK
+            await writeParam('ARMING_CHECK', 1, 6);
+
+            // Step 7 — Takeoff to 10 m
+            await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, true);
+
+            // Step 8 — Wait for the vehicle to reach takeoff altitude (up to 15 s)
+            await waitForAltitude(8, 15000);
+          }
+
+          // Step 9 — Switch to AUTO and begin mission
+          await sendMavlinkCommand('DO_SET_MODE', `${[1, 3]}`, true);
+
           const notification = new Notification({
             target: document.body,
-            props: {
-              title: 'Mission Started',
-              content: 'The mission has been started.',
-              type: 'info',
-            }
+            props: { title: '✅ Mission Started', content: `${get(missionPlanTitleStore)} is now running in AUTO mode.`, type: 'success' }
           });
-          setTimeout(() => notification.$destroy(), 10000);
+          setTimeout(() => notification.$destroy(), 8000);
         },
       }
     });
@@ -465,7 +466,7 @@
           on:click={() => {pauseMission()}}
         >
           <i class="fas fa-pause"></i>
-          <div class="tooltip">Pause Mission (Loiter)</div>
+          <div class="tooltip">Pause Mission (POSHOLD)</div>
         </button>
       {/if}
       <button class="px-2 py-1 bg-[#f87171] rounded-lg hover:bg-[#ff7e7e]"

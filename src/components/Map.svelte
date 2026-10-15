@@ -25,7 +25,7 @@
   export let hideOverlay: boolean = false;
   export let mavLocation: L.LatLng | { lat: number; lng: number };
   export let id: string | null = null;
-  export let showSwath: boolean = false; // Show camera footprint overlay
+  export const showSwath: boolean = false; // Show camera footprint overlay — passed in by parent
   import {
     darkModeStore,
     primaryColorStore,

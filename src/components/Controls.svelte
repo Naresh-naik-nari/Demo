@@ -10,6 +10,7 @@
     tertiaryColorStore
   } from '../stores/customizationStore';
   import { get } from 'svelte/store';
+  import { sendCommand, setAltitude } from '$lib/api/mavlink';
 
   let altitude = get(mavAltitudeStore);
   let maxSpeed: string = '';
@@ -25,65 +26,56 @@
   $: altitude = $mavAltitudeStore;
   $: mavSatellite = $mavSatelliteStore;
 
-  async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-    const response = await fetch(`/api/mavlink/send_command`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': command,
-        'params': params,
-        'useCmdLong': useCmdLong,
-        'useArduPilotMega': useArduPilotMega
-      },
-    });
-    if (response.ok) {
-      console.log(await response.text());
-    } else {
-      console.error(`Error: ${await response.text()}`);
-    }
-  }
-  
+  /**
+   * Modes that accept SET_POSITION_TARGET_GLOBAL_INT altitude commands from GCS.
+   * Do NOT include modes that should not be silently overridden by the controls panel.
+   * Source: https://ardupilot.org/copter/docs/flight-modes.html
+   */
+  const ALTITUDE_CAPABLE_MODES = new Set([
+    'GUIDED', 'LOITER', 'POSHOLD', 'ALT_HOLD', 'AUTO', 'CIRCLE',
+  ]);
+
+  /**
+   * Modes that accept CONDITION_YAW commands from GCS.
+   */
+  const YAW_CAPABLE_MODES = new Set([
+    'GUIDED', 'LOITER', 'POSHOLD', 'AUTO',
+  ]);
+
+  /** true when the current mode accepts GCS altitude commands */
+  $: canSetAltitude = ALTITUDE_CAPABLE_MODES.has(mavMode);
+
+  /** true when the current mode accepts GCS yaw commands */
+  $: canSetYaw = YAW_CAPABLE_MODES.has(mavMode);
+
+  /**
+   * Sets the vehicle's maximum horizontal speed via DO_CHANGE_SPEED.
+   * Works in most GPS modes. See: https://ardupilot.org/copter/docs/ac2_guidedmode.html#speed-control
+   */
   async function setMaxSpeed(speed: number) {
-    // DO_CHANGE_SPEED command
-    // param1: Speed type (0=Airspeed, 1=Ground Speed, 2=Climb Speed, 3=Descent Speed)
-    // param2: Speed in m/s
-    // param3: Throttle as percentage (use -1 for no change)
-    await sendMavlinkCommand('DO_CHANGE_SPEED', `1,${speed},-1`, 'true');
-    console.log(`Max speed set to ${speed} m/s`);
+    try {
+      await sendCommand('DO_CHANGE_SPEED', [1, speed, -1], true);
+      console.log(`[Controls] Max speed set to ${speed} m/s`);
+    } catch (err) {
+      console.error('[Controls] setMaxSpeed failed:', err);
+    }
   }
 
+  /**
+   * Commands the vehicle to a specific altitude.
+   * Only works in modes that accept altitude targets from GCS.
+   * Does NOT auto-switch modes — that would silently override the pilot's chosen mode.
+   */
   async function goToAltitude(targetAltitude: number) {
-    // Ensure GUIDED mode first
-    if (mavMode !== 'GUIDED') {
-      await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-      await new Promise(resolve => setTimeout(resolve, 500));
+    if (!canSetAltitude) {
+      console.warn(`[Controls] Current mode ${mavMode} does not accept altitude commands. Switch to GUIDED or LOITER first.`);
+      return;
     }
-    // SET_POSITION_TARGET_GLOBAL_INT via dedicated endpoint — works on both
-    // ArduPlane and ArduCopter GUIDED mode (no CMD ACK needed, it's a message).
-    await fetch('/api/mavlink/set_altitude', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'altitude': String(targetAltitude)
-      }
-    });
-    console.log(`Going to altitude: ${targetAltitude} m`);
-  }
-  
-  async function setPositionLocal(x: string, y: string, z: string) {
-    const response = await fetch("/api/mavlink/set_position_local", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x": x,
-        "y": y,
-        "z": z,
-      },
-    });
-    if (response.ok) {
-      console.log(`Local position set successfully: x: ${x}, y: ${y}, z: ${z}`);
-    } else {
-      console.error("Failed to set local position");
+    try {
+      await setAltitude(targetAltitude);
+      console.log(`[Controls] Altitude target: ${targetAltitude} m`);
+    } catch (err) {
+      console.error('[Controls] goToAltitude failed:', err);
     }
   }
 </script>
@@ -134,18 +126,17 @@
           <input type="number" min="0" max="100" class="form-input" placeholder="100 m" bind:value={altitudeSetPoint} />
         </div>
         <button class="set-btn text-[8pt] rounded-full py-1 px-3 mt-2"
+          title={!canSetAltitude ? `Switch to GUIDED or LOITER to use altitude control (current: ${mavMode})` : ''}
           on:click|preventDefault={async () => {
             const speed = parseFloat(maxSpeed);
-            const altitude = parseFloat(altitudeSetPoint);
-            
+            const alt   = parseFloat(altitudeSetPoint);
             if (!isNaN(speed) && speed > 0) {
               await setMaxSpeed(speed);
-              maxSpeed = ''; // Clear input after sending
+              maxSpeed = '';
             }
-            
-            if (!isNaN(altitude) && altitude > 0) {
-              await goToAltitude(altitude);
-              altitudeSetPoint = ''; // Clear input after sending
+            if (!isNaN(alt) && alt > 0) {
+              await goToAltitude(alt);
+              altitudeSetPoint = '';
             }
           }}>
           Set
@@ -156,27 +147,17 @@
     <div class="alt-btns column flex flex-col items-center justify-center text-center space-y-4">
       <div class="flex flex-col items-center">
         <div class="label text-sm mb-1" title="Altitude Up">Altitude Up</div>
-        <button class="alt-button rounded-full" on:click={async () => {
-          if (mavMode !== 'GUIDED') {
-            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-          const newAltitude = altitude + 10;
-          await goToAltitude(newAltitude);
-        }}>
+        <button class="alt-button rounded-full" disabled={!canSetAltitude}
+          title={canSetAltitude ? 'Altitude Up (+10m)' : `Switch to GUIDED or LOITER to use altitude control (current: ${mavMode})`}
+          on:click={() => goToAltitude(altitude + 10)}>
           <i class="alt-up fas fa-arrow-up"></i>
         </button>
       </div>
       <div class="flex flex-col items-center justify-center">
         <div class="label text-sm mb-1" title="Altitude Down">Altitude Down</div>
-        <button class="alt-button rounded-full" on:click={async () => {
-          if (mavMode !== 'GUIDED') {
-            await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-          const newAltitude = Math.max(0, altitude - 10); // Don't go below 0
-          await goToAltitude(newAltitude);
-        }}>
+        <button class="alt-button rounded-full" disabled={!canSetAltitude}
+          title={canSetAltitude ? 'Altitude Down (-10m)' : `Switch to GUIDED or LOITER to use altitude control (current: ${mavMode})`}
+          on:click={() => goToAltitude(Math.max(0, altitude - 10))}>
           <i class="alt-down fas fa-arrow-down"></i>
         </button>
       </div>
@@ -186,13 +167,11 @@
       <div id="rotate-left-button" class="flex flex-col items-center">
         <div class="label text-sm mb-1">Rotate Left</div>
         <button class="rotate-button rotate-left rounded-full"
+          disabled={!canSetYaw}
+          title={canSetYaw ? 'Rotate Left 45°' : `Switch to GUIDED or LOITER for yaw control (current: ${mavMode})`}
           on:click={async () => {
-            if (mavMode !== 'GUIDED') {
-              await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            // CONDITION_YAW: angle, speed, direction(-1=CCW, 1=CW), relative(0=absolute, 1=relative)
-            await sendMavlinkCommand('CONDITION_YAW', '45,10,-1,1', 'true');
+            // CONDITION_YAW: angle=45, speed=10, direction=-1 (CCW), relative=1
+            await sendCommand('CONDITION_YAW', [45, 10, -1, 1], true);
           }}>
           <i class="fas fa-rotate-left"></i>
         </button>
@@ -200,13 +179,11 @@
       <div class="flex flex-col items-center">
         <div class="label text-sm mb-1">Rotate Right</div>
         <button class="rotate-button rotate-right rounded-full"
+          disabled={!canSetYaw}
+          title={canSetYaw ? 'Rotate Right 45°' : `Switch to GUIDED or LOITER for yaw control (current: ${mavMode})`}
           on:click={async () => {
-            if (mavMode !== 'GUIDED') {
-              await sendMavlinkCommand('DO_SET_MODE', '1,4', 'true');
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            // CONDITION_YAW: angle, speed, direction(-1=CCW, 1=CW), relative(0=absolute, 1=relative)
-            await sendMavlinkCommand('CONDITION_YAW', '45,10,1,1', 'true');
+            // CONDITION_YAW: angle=45, speed=10, direction=1 (CW), relative=1
+            await sendCommand('CONDITION_YAW', [45, 10, 1, 1], true);
           }}>
           <i class="fas fa-rotate-right"></i>
         </button>

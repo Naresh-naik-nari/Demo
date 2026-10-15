@@ -52,9 +52,8 @@
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'username': email,
-                'password': password
             },
+            body: JSON.stringify({ username: email, password }),
         })
         if (response.status === 200) {
             document.cookie = 'lastActivity=' + Date.now();
@@ -156,7 +155,6 @@
       margin-bottom: 0.3em;
     }
     input[type="text"],
-    input[type="email"],
     input[type="password"] {
       background-color: var(--tertiaryColor);
       border: 2px solid var(--secondaryColor);

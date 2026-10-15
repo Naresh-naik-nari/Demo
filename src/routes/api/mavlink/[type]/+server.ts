@@ -1,12 +1,19 @@
+/**
+ * @file +server.ts
+ * @route POST /api/mavlink/[type]
+ * @description Single POST handler that routes all MAVLink operations from the
+ * client to the server-side MAVLink singleton. The `type` path parameter
+ * selects the operation; each case validates its inputs and returns a typed
+ * JSON or plain-text response.
+ */
+
 import type { RequestHandler } from '@sveltejs/kit';
+import { errorResponse } from '$lib/server/errors';
 import {
     initializePort,
     forceConnect,
     forceDisconnect,
-    closeExistingConnection,
     getConnectionStatus,
-    detectPort,
-    requestStatus,
     requestParameters,
     writeParameter,
     sendMavlinkCommand,
@@ -16,191 +23,211 @@ import {
     setPositionLocal,
     setAltitudeGlobal,
     newLogs,
-    logs
 } from '$lib/server/mavlink';
 
+// ─── Shared response helpers ──────────────────────────────────────────────────
+
+const json = (data: unknown, status = 200) =>
+    new Response(JSON.stringify(data), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+    });
+
+const text = (message: string, status = 200) =>
+    new Response(message, { status });
+
+const badRequest = (message: string) => text(message, 400);
+
+// ─── Handler ─────────────────────────────────────────────────────────────────
+
 export const POST: RequestHandler = async (event): Promise<Response> => {
-    switch (event.params.type) {
-        case 'heartbeat':
+    const { type } = event.params;
+
+    switch (type) {
+
+        // ── Heartbeat / status ─────────────────────────────────────────────
+        case 'heartbeat': {
             try {
                 await initializePort();
                 const status = getConnectionStatus();
+                // Drain new logs atomically (splice mutates S.newLogs in place)
                 const logsToSend = newLogs.splice(0);
-                return new Response(JSON.stringify({ logs: logsToSend, portOpen: status.portOpen, online: status.online }), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'isProduction': `${process.env.NODE_ENV === 'production'}`,
-                    }
-                });
+                return json({ logs: logsToSend, portOpen: status.portOpen, online: status.online });
             } catch (err) {
-                console.error(err);
-                return new Response(JSON.stringify({ logs: [], portOpen: false, online: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-            }
-        case 'send_command':
-            let command = event.request.headers.get('command');
-            let params: string | number[] | null = event.request.headers.get('params');
-            let useArduPilotMega = event.request.headers.get('useArduPilotMega');
-            let useCmdLong = event.request.headers.get('useCmdLong');
-            if (useCmdLong === null) useCmdLong = 'false';
-            if (useArduPilotMega === null) useArduPilotMega = 'false';
-            if (params) params = params.split(',').map((param) => {
-                return parseFloat(param);
-            });
-            try {
-                if (command) {
-                    if (params === null) params = [];
-                    await sendMavlinkCommand(command, params as number[], useCmdLong === 'true', useArduPilotMega === 'true');
-                    console.log(`MAVLink Command sent: ${command}, params: [${params}]`);
-                    return new Response(`MAVLink Command sent: ${command}, params: [${params}]`, { status: 200 });
-                } else {
-                    return new Response('Command not provided', { status: 400 });
-                }
-            } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
-            }
-        case 'clear_mission':
-            try {
-                await clearAllMissionItems();
-                console.log(`MAVLink missions cleared`);
-                return new Response('MAVLink missions cleared', { status: 200 });
-            } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
-            }
-        case 'load_mission':
-            let actions = event.request.headers.get('actions');
-            try {
-                if (actions) {
-                    await setMissionCount(Object.keys(JSON.parse(actions)).length);
-                    Object.entries(JSON.parse(actions)).forEach(async ([key, val]) => {
-                        await new Promise((resolve) => setTimeout(resolve, 250)); // Wait for 250 ms
-                        await loadMissionItem(val,  parseInt(key));
-                    });
-                    return new Response('MAVLink mission loaded', { status: 200 });
-                }
-            } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
-            }
-        case 'set_position_local':
-            let x: number = parseInt(event.request.headers.get('x')!);
-            let y: number = parseInt(event.request.headers.get('y')!);
-            let z: number = parseInt(event.request.headers.get('z')!);
-            if (isNaN(x) || isNaN(y) || isNaN(z)) {
-                return new Response('Invalid coordinates', { status: 400 });
-            }
-            try {
-                await setPositionLocal(x, y, z);
-                return new Response(`Local position set manually: x: ${x}, y: ${y}, z: ${z}`, { status: 200 });
-            } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
-            }
-        case 'set_altitude': {
-            const altHeader = event.request.headers.get('altitude');
-            const altMeters = parseFloat(altHeader ?? '');
-            if (isNaN(altMeters) || altMeters < 0) {
-                return new Response('Invalid altitude', { status: 400 });
-            }
-            try {
-                await setAltitudeGlobal(altMeters);
-                console.log(`Altitude target set: ${altMeters} m`);
-                return new Response(`Altitude target set: ${altMeters} m`, { status: 200 });
-            } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
+                console.error('[heartbeat]', err);
+                return json({ logs: [], portOpen: false, online: false });
             }
         }
-        case 'request_params':
+
+        case 'status': {
+            return json(getConnectionStatus());
+        }
+
+        // ── Connection management ──────────────────────────────────────────
+        case 'connect': {
             try {
-                await requestParameters();
-                return new Response('Parameters requested', { status: 200 });
+                const body = await event.request.json();
+                const { type: connType, port, host, portNumber, bindPort } = body;
+
+                if (!connType) return badRequest('Connection type not specified');
+
+                await forceConnect({ type: connType, port, host, portNumber, bindPort });
+                return json(getConnectionStatus());
             } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
+                return errorResponse(err);
             }
-        case 'write_param':
-            let id = event.request.headers.get('id')!;
-            let value = parseFloat(event.request.headers.get('value')!);
-            let type = parseInt(event.request.headers.get('type')!);
-            if (isNaN(value) || isNaN(type)) {
-                return new Response('Invalid value or type', { status: 400 });
-            }
+        }
+
+        case 'select_port': {
+            const portPath = event.request.headers.get('port');
+            if (!portPath) return badRequest('Port not specified');
             try {
-                // Null-terminate `id` if it's less than 16 characters
-                // https://mavlink.io/en/services/parameter.html#parameter-names
-                let processedId = id.padEnd(16, '\0');
-                await writeParameter(processedId, value, type);
-                console.log(`Parameter written: ${processedId}, value: ${value}, type: ${type}`);
-                return new Response(`Parameter written: ${processedId}, value: ${value}, type: ${type}`, { status: 200 });
+                await forceConnect({ type: 'serial', port: portPath });
+                return json(getConnectionStatus());
             } catch (err) {
-                console.error(err);
-                return new Response(`Error: ${(err as Error).stack}`, { status: 500 });
+                // Return current status + error so the UI can display it
+                return json({ ...getConnectionStatus(), error: (err as Error).message });
             }
+        }
+
+        case 'disconnect': {
+            try {
+                await forceDisconnect();
+            } catch {
+                // Disconnect errors are non-fatal — always return disconnected state
+            }
+            return json({ connected: false, portOpen: false, online: false });
+        }
+
         case 'list_ports': {
             try {
                 const { SerialPort } = await import('serialport');
                 const portList = await SerialPort.list();
-                return new Response(JSON.stringify(portList), {
-                    status: 200,
-                    headers: { 'Content-Type': 'application/json' }
-                });
+                return json(portList);
             } catch (err) {
-                return new Response(JSON.stringify([]), {
-                    status: 200,
-                    headers: { 'Content-Type': 'application/json' }
-                });
+                console.error('[list_ports]', err);
+                return json([]);
             }
         }
-        case 'select_port': {
-            const portPath = event.request.headers.get('port');
-            if (!portPath) return new Response('Port not specified', { status: 400 });
+
+        // ── Commands ───────────────────────────────────────────────────────
+        case 'send_command': {
+            const command = event.request.headers.get('command');
+            if (!command) return badRequest('Command not provided');
+
+            const paramsHeader = event.request.headers.get('params');
+            const params: number[] = paramsHeader
+                ? paramsHeader.split(',').map((p) => parseFloat(p))
+                : [];
+
+            const useCmdLong      = event.request.headers.get('useCmdLong')      === 'true';
+            const useArduPilotMega = event.request.headers.get('useArduPilotMega') === 'true';
+
             try {
-                await forceConnect({ type: 'serial', port: portPath });
-                return new Response(JSON.stringify(getConnectionStatus()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                await sendMavlinkCommand(command, params, useCmdLong, useArduPilotMega);
+                console.log(`[send_command] ${command} params=[${params}]`);
+                return text(`MAVLink command sent: ${command}, params: [${params}]`);
             } catch (err) {
-                return new Response(JSON.stringify({ ...getConnectionStatus(), error: (err as Error).message }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                return errorResponse(err);
             }
         }
-        case 'connect': {
+
+        // ── Mission ────────────────────────────────────────────────────────
+        case 'clear_mission': {
             try {
-                const body = await event.request.json();
-                const { type, port, host, portNumber, bindPort } = body;
-                
-                if (!type) {
-                    return new Response('Connection type not specified', { status: 400 });
+                await clearAllMissionItems();
+                return text('MAVLink missions cleared');
+            } catch (err) {
+                return errorResponse(err);
+            }
+        }
+
+        case 'load_mission': {
+            const actionsHeader = event.request.headers.get('actions');
+            if (!actionsHeader) return badRequest('Actions not provided');
+
+            try {
+                const actions = JSON.parse(actionsHeader);
+                const count   = Object.keys(actions).length;
+                await setMissionCount(count);
+
+                // Upload items sequentially with a small delay to avoid overwhelming the FC
+                for (const [key, val] of Object.entries(actions)) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+                    await loadMissionItem(val, parseInt(key));
                 }
-                
-                await forceConnect({
-                    type,
-                    port,
-                    host,
-                    portNumber,
-                    bindPort
-                });
-                
-                return new Response(JSON.stringify(getConnectionStatus()), { 
-                    status: 200, 
-                    headers: { 'Content-Type': 'application/json' } 
-                });
+
+                return text('MAVLink mission loaded');
             } catch (err) {
-                console.error('Connection error:', err);
-                return new Response((err as Error).message, { status: 500 });
+                return errorResponse(err);
             }
         }
-        case 'disconnect':
+
+        // ── Position / altitude ────────────────────────────────────────────
+        case 'set_position_local': {
+            const x = parseInt(event.request.headers.get('x') ?? '');
+            const y = parseInt(event.request.headers.get('y') ?? '');
+            const z = parseInt(event.request.headers.get('z') ?? '');
+
+            if (isNaN(x) || isNaN(y) || isNaN(z)) {
+                return badRequest('Invalid coordinates — x, y, z must be integers');
+            }
+
             try {
-                await forceDisconnect();
-                return new Response(JSON.stringify({ connected: false, portOpen: false, online: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-            } catch {
-                return new Response(JSON.stringify({ connected: false, portOpen: false, online: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                await setPositionLocal(x, y, z);
+                return text(`Local position set: x=${x}, y=${y}, z=${z}`);
+            } catch (err) {
+                return errorResponse(err);
             }
-        case 'status': {
-            return new Response(JSON.stringify(getConnectionStatus()), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
+
+        case 'set_altitude': {
+            const altMeters = parseFloat(event.request.headers.get('altitude') ?? '');
+            if (isNaN(altMeters) || altMeters < 0) {
+                return badRequest('Invalid altitude — must be a non-negative number');
+            }
+
+            try {
+                await setAltitudeGlobal(altMeters);
+                return text(`Altitude target set: ${altMeters} m`);
+            } catch (err) {
+                return errorResponse(err);
+            }
+        }
+
+        // ── Parameters ─────────────────────────────────────────────────────
+        case 'request_params': {
+            try {
+                await requestParameters();
+                return text('Parameters requested');
+            } catch (err) {
+                return errorResponse(err);
+            }
+        }
+
+        case 'write_param': {
+            const id    = event.request.headers.get('id');
+            const value = parseFloat(event.request.headers.get('value') ?? '');
+            const ptype = parseInt(event.request.headers.get('type')  ?? '');
+
+            if (!id)              return badRequest('Parameter id not provided');
+            if (isNaN(value))     return badRequest('Invalid parameter value');
+            if (isNaN(ptype))     return badRequest('Invalid parameter type');
+
+            try {
+                // Null-pad id to 16 chars per MAVLink spec:
+                // https://mavlink.io/en/services/parameter.html#parameter-names
+                const processedId = id.padEnd(16, '\0');
+                await writeParameter(processedId, value, ptype);
+                console.log(`[write_param] ${processedId} = ${value} (type ${ptype})`);
+                return text(`Parameter written: ${processedId} = ${value}`);
+            } catch (err) {
+                return errorResponse(err);
+            }
+        }
+
+        // ── Fallthrough ────────────────────────────────────────────────────
         default:
-            return new Response(`Invalid request type: ${event.params.type}`, { status: 400 });
-    };
+            return badRequest(`Unknown MAVLink operation: "${type}"`);
+    }
 };

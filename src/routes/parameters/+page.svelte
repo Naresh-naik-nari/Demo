@@ -4,6 +4,8 @@
     import { onMount, onDestroy } from 'svelte';
     import { get, writable, type Writable } from 'svelte/store';
     import Modal from '../../components/Modal.svelte';
+    import { requestParams, writeParam } from '$lib/api/mavlink';
+    import { encodeParameterValue } from '$lib/utils/parameters';
 
     const loading: Writable<boolean> = writable(false);
     const receiving: Writable<boolean> = writable(false); // true while FC is streaming params
@@ -92,13 +94,7 @@
             receiving.set(true);
             error.set(null);
             if (!silent) success.set(null);
-
-            const response = await fetch('/api/mavlink/request_params', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-            });
-
-            if (!response.ok) throw new Error(await response.text());
+            await requestParams();
             console.log('📋 PARAM_REQUEST_LIST sent — waiting for FC to stream parameters...');
         } catch (err: any) {
             error.set(`Failed to request parameters: ${err.message}`);
@@ -108,63 +104,14 @@
         }
     }
 
-    function encodeParameterValue(value: number, paramType: number): number {
-        // Ensure the value is within valid range for the type
-        switch (paramType) {
-            case 1: // uint8
-                return Math.min(255, Math.max(0, Math.round(value)));
-            case 2: // int8
-                return Math.min(127, Math.max(-128, Math.round(value)));
-            case 3: // uint16
-                return Math.min(65535, Math.max(0, Math.round(value)));
-            case 4: // int16
-                return Math.min(32767, Math.max(-32768, Math.round(value)));
-            case 5: // uint32
-                return Math.min(4294967295, Math.max(0, Math.round(value)));
-            case 6: // int32
-                return Math.min(2147483647, Math.max(-2147483648, Math.round(value)));
-            case 7: // uint64
-            case 8: // int64
-                console.warn('64-bit integers may not be fully precise in JavaScript');
-                return value;
-            case 9: // float
-                return value;
-            case 10: // double
-                return value;
-            default:
-                console.warn('Unknown parameter type:', paramType);
-                return value;
-        }
-    }
-
     async function writeParameter(id: string, value: number, type: number) {
         try {
             error.set(null);
-            const encodedValue = encodeParameterValue(value, type);
-            
-            // Remove any extra quotes from the parameter ID
+            const encoded = encodeParameterValue(value, type);
             const cleanId = id.replace(/^"|"$/g, '');
-            
-            console.log('Writing parameter:', {
-                id: cleanId,
-                originalValue: value,
-                encodedValue,
-                type
-            });
-            
-            const response = await fetch('/api/mavlink/write_param', {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json; charset=utf-8',
-                    'id': cleanId,
-                    'value': encodedValue.toString(),
-                    'type': type.toString(),
-                },
-            });
-
-            if (!response.ok) throw new Error(await response.text());
+            await writeParam(cleanId, encoded, type);
             success.set(`Parameter ${cleanId} written successfully`);
-            modified.update(modified => modified.filter(param_id => param_id !== cleanId));
+            modified.update(m => m.filter(p => p !== cleanId));
             setTimeout(() => success.set(null), 5000);
         } catch (err: any) {
             error.set(`Failed to write parameter ${id}: ${err.message}`);

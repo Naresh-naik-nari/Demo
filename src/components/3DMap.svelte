@@ -3,6 +3,7 @@
   import { mavHeadingStore, mavLocationStore } from '../stores/mavlinkStore';
   import { mapZoomStore, lockViewStore, threeDMapStore } from '../stores/mapStore';
   import { get } from 'svelte/store';
+  import { MAPTILER_KEY } from '$lib/config';
   import pkg from 'maplibre-gl';
   const { Map, Marker, NavigationControl } = pkg;
 
@@ -14,7 +15,6 @@
   $: mavHeading = $mavHeadingStore;
 
   onMount(() => {
-    const MAPTILER_KEY = 'FzmtxzLwraPRISOg9JeU';
     map = new Map({
       container: 'threedmap',
       style: `https://api.maptiler.com/maps/basic-v2/style.json?key=${MAPTILER_KEY}`,

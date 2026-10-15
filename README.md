@@ -100,14 +100,6 @@ Use the plug icon in the sidebar to connect to your MAVLink device via USB/Seria
 - **Authentication**: Lucia Auth
 - **Database**: LibSQL (SQLite)
 
-## Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
 
-## License
 
-[Your License Here]
-
-## Support
-
-For issues and questions, please open an issue on GitHub or contact the development team.

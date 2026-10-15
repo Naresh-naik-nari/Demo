@@ -59,9 +59,8 @@
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'username': email,
-        'password': password
       },
+      body: JSON.stringify({ username: email, password }),
     })
     if (response.status === 200) {
       document.cookie = 'lastActivity=' + Date.now();

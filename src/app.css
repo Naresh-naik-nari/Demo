@@ -16,16 +16,68 @@ main {
     height: 100vh;
 }
 
+/* ── Scrollbar CSS variables (applied universally) ── */
 * {
-  transition:
-    all 0.1s ease,
-    color 0s ease,
-    background-color 0.1s ease,
-    opacity 0.5s ease,
-    height 0s ease !important;
   --sb-track-color: var(--primaryColor);
   --sb-thumb-color: var(--tertiaryColor);
   --sb-size: 12px;
+}
+
+/*
+ * Targeted transitions — avoid the wildcard `* { transition: all }` anti-pattern
+ * which causes sluggish rendering on every DOM property change (including layout
+ * properties that should never animate, like width, height, and display).
+ *
+ * Only interactive UI elements receive transitions; structural/layout elements do not.
+ */
+button,
+a,
+input,
+select,
+textarea,
+.nav-button,
+.nav-icon,
+.pill,
+.arm-btn,
+.tab-btn,
+.port-item,
+.preset-btn,
+.refresh-btn,
+.set-btn,
+.alt-button,
+.rotate-button,
+.import-btn,
+.add-action,
+.delete-action,
+.circular-button,
+.tooltip {
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease,
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
+}
+
+/* Dark-mode toggle needs a slightly longer colour fade */
+body,
+.dashboard,
+.desktop-nav,
+.mobile-nav,
+.status-bar {
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+/* Tooltips slide in — keep transform transition only here */
+.tooltip {
+  transition:
+    opacity 0.2s ease,
+    visibility 0.2s ease,
+    transform 0.2s ease;
 }
 
 ::-webkit-scrollbar {

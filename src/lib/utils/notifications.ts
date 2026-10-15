@@ -9,9 +9,9 @@
  *   showNotification({ title: 'Done', content: 'Mission saved.', type: 'success' });
  */
 
-import Notification from '$components/Notification.svelte';
+import Notification from '$lib/../components/Notification.svelte';
 import { get } from 'svelte/store';
-import { audoNotificationStore } from '$stores/customizationStore';
+import { audoNotificationStore } from '$lib/../stores/customizationStore';
 
 export type NotificationType = 'success' | 'warning' | 'error' | 'info';
 

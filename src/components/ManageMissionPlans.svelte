@@ -14,6 +14,12 @@
     tertiaryColorStore
   } from '../stores/customizationStore';
   import Notification from "./Notification.svelte";
+  import { sendCommand, clearMission, loadMission } from '$lib/api/mavlink';
+  import {
+    listMissions, loadMissionRecord, unloadAllMissions,
+    saveMission, updateMission, deleteMission, missionExists,
+    type MissionRecord
+  } from '$lib/api/mission';
 
   export let title: string = "Manage Mission Plans";
   export let isModal = false;
@@ -33,43 +39,19 @@
     getMissionPlans();
   });
 
-  async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-    const response = await fetch(`/api/mavlink/send_command`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': command,
-        'params': params,
-        'useCmdLong': useCmdLong,
-        'useArduPilotMega': useArduPilotMega
-      },
-    });
-    if (response.ok) {
-      console.log(await response.text());
-    } else {
-      console.error(`Error: ${await response.text()}`);
-    }
-  }
-
   async function getMissionPlans() {
     try {
-      let response = await fetch("/api/mission/list", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-      let records = await response.json();
-      if (Object.keys(records).length > 0) {
-        missionPlans = records.map((record: any) => ({
-          id: record.id,
-          title: record.title,
-          actions: JSON.parse(record.actions),
-          isLoaded: record.isLoaded,
+      const records = await listMissions();
+      if (records.length > 0) {
+        missionPlans = records.map((r: MissionRecord) => ({
+          id: r.id,
+          title: r.title,
+          actions: JSON.parse(r.actions),
+          isLoaded: r.isLoaded,
         }));
       }
-    } catch (error) {
-      console.error("Error fetching mission plans:", error);
+    } catch (err) {
+      console.error('[ManageMissionPlans] getMissionPlans failed:', err);
     }
   }
   
@@ -94,160 +76,41 @@
   }
 
   async function handleLoad(title: string, actions: MissionPlanActions) {
-    sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true'); // 4 is GUIDED: see CopterMode enum in /mavlink-mappings/dist/lib/ardupilotmega.ts
-
-    // Clear the current mission plan
     try {
-      let response = await fetch("/api/mavlink/clear_mission", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-      });
-      if (response.ok) {
-        console.log(await response.text());
-      } else {
-        console.error(`Error: ${await response.text()}`);
-      }
-    } catch (error) {
-      console.error("Error:", error);
-    }
-
-    // Unload all mission plans first
-    await fetch("/api/mission/unload", {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-        },
-    });
-
-    // Load the new mission plan
-    await fetch("/api/mission/load", {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            "title": title,
-        },
-    });
-
-    missionPlanTitleStore.set(title);
-    missionPlanActionsStore.set(actions);
-    missionCompleteStore.set(false);
-    try {
-        let response = await fetch("/api/mavlink/load_mission", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "actions": JSON.stringify(actions),
-            },
-        });
-        if (response.ok) {
-            console.log(await response.text());
-        } else {
-            console.error(`Error: ${await response.text()}`);
-        }
-    } catch (error) {
-        console.error("Error:", error);
+      await sendCommand('DO_SET_MODE', [1, 4], true); // GUIDED
+      await clearMission();
+      await unloadAllMissions();
+      await loadMissionRecord(title);
+      missionPlanTitleStore.set(title);
+      missionPlanActionsStore.set(actions);
+      missionCompleteStore.set(false);
+      await loadMission(actions);
+    } catch (err) {
+      console.error('[ManageMissionPlans] handleLoad failed:', err);
     }
   }
 
   async function handleSave(title: string, plan: MissionPlanActions) {
-      await handleLoad(title, plan);
-
-      let missionExists = false;
-      let response = await fetch("/api/mission/checkExists", {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            "title": title,
-        },
-      });
-      let responseData = await response.json();
-      console.log(responseData);
-      if (responseData.length > 0) missionExists = true;
-      
-      if (missionExists) {
-          await handleUpdate(title, plan);
+    await handleLoad(title, plan);
+    try {
+      const exists = await missionExists(title);
+      if (exists) {
+        await updateMission(title, plan);
       } else {
-          let missionPlan = {
-            title: title,
-            actions: plan,
-            isLoaded: 1,
-          };
-          let response = await fetch("/api/mission/save", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "title": missionPlan.title,
-              "actions": JSON.stringify(missionPlan.actions),
-            },
-          }).catch((error) => {
-            new Modal({
-              target: document.body,
-              props: {
-                title: "Error",
-                content: error.message,
-                isOpen: true,
-                confirmation: false,
-                notification: true,
-              },
-            });
-          });
-          if (response) {
-            let notification = new Notification({
-              target: document.body,
-              props: {
-                  title: "Mission Plan Saved",
-                  content: "The mission plan has been saved.",
-                  type: "info",
-              },
-            });
-            setTimeout(() => {
-                notification.$destroy();
-            }, 3000);
-          }
+        await saveMission(title, plan);
       }
-  }
-
-  async function handleUpdate(title: string, plan: MissionPlanActions) {
-    let missionPlan = {
-      title: title,
-      actions: plan,
-      isLoaded: 1,
-    };
-    let response = await fetch("/api/mission/update", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "title": missionPlan.title,
-        "actions": JSON.stringify(missionPlan.actions),
-      },
-    }).catch((error) => {
+      const notification = new Notification({
+        target: document.body,
+        props: { title: 'Mission Plan Saved', content: 'The mission plan has been saved.', type: 'info' },
+      });
+      setTimeout(() => notification.$destroy(), 3000);
+    } catch (err: any) {
       new Modal({
         target: document.body,
-        props: {
-            title: "Error",
-            content: error.message,
-            isOpen: true,
-            confirmation: false,
-            notification: true,
-        },
+        props: { title: 'Error', content: err.message, isOpen: true, confirmation: false, notification: true },
       });
-    });
-    if (response) {
-      let notification = new Notification({
-        target: document.body,
-        props: {
-          title: "Mission Plan Updated",
-          content: "The mission plan has been updated.",
-          type: "info",
-        },
-      });
-      setTimeout(() => {
-        notification.$destroy();
-      }, 3000);
     }
-}
+  }
 
   async function deleteMissionPlan(title: string) {
     const modal = new Modal({
@@ -262,25 +125,17 @@
           await handleDelete(title);
           modal.$destroy();
         },
-        onCancel: () => {
-          modal.$destroy();
-        },
+        onCancel: () => { modal.$destroy(); },
       },
     });
   }
 
   async function handleDelete(title: string) {
     try {
-      await fetch(`/api/mission/delete`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "title": title,
-        },
-      });
+      await deleteMission(title);
       missionPlans = missionPlans.filter((plan) => plan.title !== title);
-    } catch (error) {
-      console.error("Error deleting mission plan:", error);
+    } catch (err) {
+      console.error('[ManageMissionPlans] handleDelete failed:', err);
     }
   }
 

@@ -591,6 +591,11 @@ function _attachReader(): void {
             if (!data) return;
             const sysId  = packet.header.systemId;
             const compId = packet.header.componentId;
+            // Cache last known position so setAltitudeGlobal can use it
+            if (clazz.MSG_NAME === 'GLOBAL_POSITION_INT') {
+                (S as any).lastLat = ((data as any).lat ?? 0) / 1e7;
+                (S as any).lastLon = ((data as any).lon ?? 0) / 1e7;
+            }
             const entry = `${clazz.MSG_NAME}(${clazz.MAGIC_NUMBER})::${new Date().toISOString()}::sysid=${sysId},compid=${compId}::${JSON.stringify(convertBigIntToNumber(data))}`;
             S.logs.push(entry);
             S.newLogs.push(entry);
@@ -685,6 +690,12 @@ function _attachReaderUDP(): void {
         if (!seenMsgTypes.has(clazz.MSG_NAME)) {
             seenMsgTypes.add(clazz.MSG_NAME);
             console.log(`🆕 New message type from FC: ${clazz.MSG_NAME} (msgid=${packet.header.msgid})`);
+        }
+
+        // Cache last known position so setAltitudeGlobal can use it
+        if (clazz.MSG_NAME === 'GLOBAL_POSITION_INT') {
+            (S as any).lastLat = ((data as any).lat ?? 0) / 1e7;
+            (S as any).lastLon = ((data as any).lon ?? 0) / 1e7;
         }
 
         // Use correct header property names (sysid / compid, not systemId / componentId)
@@ -970,36 +981,44 @@ async function setPositionLocal(x: number, y: number, z: number) {
 
 /**
  * Change altitude while holding current lat/lon position.
- * Uses SET_POSITION_TARGET_GLOBAL_INT (MAVLink msg #86) which ArduPilot
- * accepts in GUIDED mode for both Plane (alt-hold) and Copter.
+ * Uses SET_POSITION_TARGET_GLOBAL_INT (MAVLink msg #86).
  *
- * typeMask bits (set = ignore field):
- *   bit 0  = vx,  bit 1  = vy,  bit 2  = vz
- *   bit 3  = ax,  bit 4  = ay,  bit 5  = az
- *   bit 6  = force,  bit 7  = yaw,  bit 8  = yaw_rate
- *   bit 9  = lat/lon (ignore position → altitude-only change)
- *   bit 10 = alt  (keep clear to USE altitude)
- * We want: ignore vx/vy/vz, ax/ay/az, yaw, yaw_rate, lat/lon → use alt only.
- * typeMask = 0b1_1111_0111_1111 = 0x0FBF (ignore everything except alt)
+ * typeMask bits — set bit = ignore that field:
+ *   bit 0 = lat, bit 1 = lon, bit 2 = alt (clear = USE alt)
+ *   bits 3-5 = vx/vy/vz, bits 6-8 = ax/ay/az
+ *   bit 9 = force, bit 10 = yaw, bit 11 = yaw_rate
  *
- * coordinateFrame 5 = MAV_FRAME_GLOBAL_RELATIVE_ALT_INT (relative to home, metres)
+ * To use ONLY altitude:
+ *   ignore lat(0), lon(1), all velocity(3-5), all accel(6-8), force(9), yaw(10), yaw_rate(11)
+ *   use alt(2) → bit 2 = 0
+ *   mask = 0b1111_1111_1011 = 0x0FFB
+ *
+ * coordinateFrame 6 = MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+ * lat/lon must be supplied as 1e7 integers even when ignored — use last known
+ * position so firmware validation passes on older ArduPilot versions.
  */
 async function setAltitudeGlobal(altMeters: number) {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const m = new common.SetPositionTargetGlobalInt();
-    m.timeBootMs        = 0;
-    m.targetSystem      = 1;
-    m.targetComponent   = 1;
-    m.coordinateFrame   = 6;     // MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-    (m as any).typeMask = 0x0FBF; // ignore everything except alt
-    (m as any).latInt   = 0;     // ignored
-    (m as any).lonInt   = 0;     // ignored
-    m.alt               = altMeters;
+    m.timeBootMs      = 0;
+    m.targetSystem    = 1;
+    m.targetComponent = 1;
+    m.coordinateFrame = 6;      // MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+
+    // Ignore lat/lon/vel/accel/yaw — use only altitude (bit 2 = 0)
+    (m as any).typeMask = 0x0FFB; // 0b1111_1111_1011
+
+    // Pass last known position so older firmware doesn't reject the message
+    const lastLat: number = (S as any).lastLat ?? 0;
+    const lastLon: number = (S as any).lastLon ?? 0;
+    (m as any).latInt = Math.round(lastLat * 1e7);
+    (m as any).lonInt = Math.round(lastLon * 1e7);
+    m.alt             = altMeters;
     m.vx = 0; m.vy = 0; m.vz = 0;
     m.afx = 0; m.afy = 0; m.afz = 0;
     m.yaw = 0; m.yawRate = 0;
     await _send(m);
-    console.log(`🔼 setAltitudeGlobal: ${altMeters} m`);
+    console.log(`🔼 setAltitudeGlobal: ${altMeters} m (lat=${lastLat}, lon=${lastLon})`);
 }
 
 function convertBigIntToNumber(obj: any): any {

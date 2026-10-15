@@ -2,6 +2,7 @@
   import { mavModeStore, mavAltitudeStore } from '../stores/mavlinkStore';
   import { get } from 'svelte/store';
   import { primaryColorStore, tertiaryColorStore } from '../stores/customizationStore';
+  import { sendCommand, setPositionLocal as apiSetPositionLocal } from '$lib/api/mavlink';
 
   let altitude: number = get(mavAltitudeStore);
 
@@ -10,70 +11,46 @@
   $: mavMode = $mavModeStore;
   $: altitude = $mavAltitudeStore;
 
-  async function sendMavlinkCommand(command: string, params: string  = '', useCmdLong: string = 'false', useArduPilotMega: string = 'false') {
-    const response = await fetch(`/api/mavlink/send_command`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'command': command,
-        'params': params,
-        'useCmdLong': useCmdLong,
-        'useArduPilotMega': useArduPilotMega
-      },
-    });
-    if (response.ok) {
-      console.log(await response.text());
-    } else {
-      console.error(`Error: ${await response.text()}`);
-    }
-  }
+  /** Only GUIDED accepts SET_POSITION_TARGET_LOCAL_NED from the GCS. */
+  $: canMove = mavMode === 'GUIDED';
 
-  async function setPositionLocal(x: string, y: string, z: string) {
-    const response = await fetch("/api/mavlink/set_position_local", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x": x,
-        "y": y,
-        "z": z,
-      },
-    });
-    if (response.ok) {
-      console.log(`Local position set successfully: x: ${x}, y: ${y}, z: ${z}`);
-    } else {
-      console.error("Failed to set local position");
+  /**
+   * Sends a lateral position offset in the NED frame.
+   * z is negative altitude (NED: down is positive) so we negate the current
+   * altitude to hold it while moving horizontally.
+   * Does NOT auto-switch modes — that would silently override the pilot's chosen mode.
+   */
+  async function moveLocal(x: number, y: number) {
+    if (!canMove) {
+      console.warn(`[DPad] Position commands only accepted in GUIDED mode (current: ${mavMode})`);
+      return;
+    }
+    try {
+      await apiSetPositionLocal(x, y, -altitude);
+    } catch (err) {
+      console.error('[DPad] moveLocal failed:', err);
     }
   }
 </script>
 
 <div class="dpad-container relative flex items-center justify-center w-48 h-48">
-  <nav class="d-pad relative" style="--tertiaryColor: {tertiaryColor}">
-    <button class="up" on:click={() => {
-        if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-        setPositionLocal('10', '0', `-${altitude}`);
-      }}>
+  <nav class="d-pad relative" style="--tertiaryColor: {tertiaryColor}"
+    title={canMove ? '' : `Switch to GUIDED mode to use directional controls (current: ${mavMode})`}
+  >
+    <button class="up" disabled={!canMove} on:click={() => moveLocal(10, 0)}>
       <i class="fas fa-chevron-up"></i>
     </button>
-    <button class="right" on:click={() => {
-        if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-        setPositionLocal('0', '10', `-${altitude}`);
-      }}>
+    <button class="right" disabled={!canMove} on:click={() => moveLocal(0, 10)}>
       <i class="fas fa-chevron-right"></i>
     </button>
-    <button class="down" on:click={() => {
-        if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-        setPositionLocal('-10', '0', `-${altitude}`);
-      }}>
+    <button class="down" disabled={!canMove} on:click={() => moveLocal(-10, 0)}>
       <i class="fas fa-chevron-down"></i>
     </button>
-    <button class="left" on:click={() => {
-        if (mavMode !== 'GUIDED') sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, 'true');
-        setPositionLocal('0', '-10', `-${altitude}`);
-      }}>
+    <button class="left" disabled={!canMove} on:click={() => moveLocal(0, -10)}>
       <i class="fas fa-chevron-left"></i>
     </button>
     <div class="center-circle">
-      <span class="move-text">Move</span>
+      <span class="move-text">{canMove ? 'Move' : mavMode}</span>
     </div>
   </nav>
 </div>

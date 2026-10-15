@@ -6,6 +6,7 @@
     secondaryColorStore,
     tertiaryColorStore
   } from '../stores/customizationStore';
+  import { listPorts, connect } from '$lib/api/mavlink';
 
   export let isOpen = false;
   export let onClose: () => void;
@@ -48,17 +49,9 @@
   async function loadPorts() {
     loading = true;
     try {
-      const response = await fetch('/api/mavlink/list_ports', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      if (response.ok) {
-        ports = await response.json();
-      } else {
-        console.error('Failed to load ports:', response.status);
-      }
-    } catch (error) {
-      console.error('Error loading ports:', error);
+      ports = await listPorts();
+    } catch (err) {
+      console.error('[ConnectionModal] loadPorts failed:', err);
     } finally {
       loading = false;
     }
@@ -70,7 +63,6 @@
 
   async function handleConnect() {
     let config: ConnectionConfig;
-    
     if (connectionType === 'serial') {
       if (!selectedPortPath) return;
       config = { type: 'serial', port: selectedPortPath };
@@ -79,24 +71,12 @@
     } else {
       config = { type: 'udp', host: udpHost, portNumber: udpPort, bindPort: udpBindPort };
     }
-    
     try {
-      const response = await fetch('/api/mavlink/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
-      });
-      
-      if (response.ok) {
-        onConnect(config);
-        onClose();
-      } else {
-        const error = await response.text();
-        alert(`Connection failed: ${error}`);
-      }
-    } catch (error) {
-      console.error('Error connecting:', error);
-      alert(`Connection error: ${error}`);
+      await connect(config);
+      onConnect(config);
+      onClose();
+    } catch (err: any) {
+      alert(`Connection failed: ${err.message}`);
     }
   }
 

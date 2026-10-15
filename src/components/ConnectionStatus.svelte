@@ -1,8 +1,11 @@
 <script lang="ts">
-    import { onlineStore, mavArmedStateStore, mavPendingArmStore } from '../stores/mavlinkStore';
+    import {
+        onlineStore, mavArmedStateStore, mavPendingArmStore, mavStateStore,
+        mavTypeStore, mavModeStore, mavSpeedStore, mavAltitudeStore, mavBatteryStore
+    } from '../stores/mavlinkStore';
     import { darkModeStore, primaryColorStore, secondaryColorStore, tertiaryColorStore } from '../stores/customizationStore';
     import { get } from 'svelte/store';
-    import Notification from './Notification.svelte';
+    import { sendCommand, writeParam } from '$lib/api/mavlink';
 
     $: darkMode       = $darkModeStore;
     $: primaryColor   = $primaryColorStore;
@@ -10,7 +13,19 @@
     $: tertiaryColor  = $tertiaryColorStore;
     $: fontColor      = darkMode ? '#ffffff' : '#000000';
 
-    $: isOnline = $onlineStore;
+    $: isOnline  = $onlineStore;
+    $: mavType   = $mavTypeStore;
+    $: mavMode   = $mavModeStore;
+    $: speed     = $mavSpeedStore;
+    $: altitude  = $mavAltitudeStore;
+    $: battery   = $mavBatteryStore;
+    $: sysState  = $mavStateStore;
+
+    // Battery colour helper
+    $: batteryColor = battery === null ? '#9ca3af'
+        : battery < 20 ? '#ef4444'
+        : battery < 50 ? '#f59e0b'
+        : '#10b981';
 
     // Use pending state for immediate UI feedback, fall back to actual FC state
     $: isArmed = $mavPendingArmStore !== null ? $mavPendingArmStore : $mavArmedStateStore;
@@ -27,29 +42,24 @@
     }
 
     async function toggleArmed() {
-        if (isPending) return; // don't allow double-click while waiting
+        if (isPending) return;
 
-        // First click — show confirm step
         if (!confirmStep) {
             confirmStep = true;
             if (confirmTimeout) clearTimeout(confirmTimeout);
-            confirmTimeout = setTimeout(resetConfirm, 3000); // auto-reset after 3s
+            confirmTimeout = setTimeout(resetConfirm, 3000);
             return;
         }
 
-        // Second click — confirmed, send command
         resetConfirm();
         isPending = true;
 
-        // Read the ACTUAL FC state (not pending) to decide what to send
         const actuallyArmed = get(mavArmedStateStore);
         const arming = !actuallyArmed;
         const param  = arming ? 1 : 0;
 
-        // Optimistically update UI immediately
         mavPendingArmStore.set(arming);
 
-        // Safety fallback — if no COMMAND_ACK in 5s, release the lock
         if (pendingTimeout) clearTimeout(pendingTimeout);
         pendingTimeout = setTimeout(() => {
             mavPendingArmStore.set(null);
@@ -57,98 +67,39 @@
         }, 5000);
 
         try {
-            console.log(`🔓 Sending ${arming ? 'ARM' : 'DISARM'} command to flight controller...`);
-            console.log(`   Command: COMPONENT_ARM_DISARM`);
-            console.log(`   Params: [${param}, 21196]`);
-            console.log(`   Param1: ${param} (${arming ? '1=ARM' : '0=DISARM'})`);
-            console.log(`   Param2: 21196 (force flag - bypass pre-arm checks)`);
-
-            // If arming: temporarily disable ARMING_CHECK so ArduPlane/Copter
-            // won't block arming when no RC transmitter is connected.
-            // ARMING_CHECK=0 means "skip all checks"; we restore it after.
             if (arming) {
-                await fetch('/api/mavlink/send_command', {
-                    method: 'POST',
-                    headers: {
-                        'content-type': 'application/json',
-                        'command': 'DO_SET_MODE',
-                        'params': '1,4',         // GUIDED
-                        'useCmdLong': 'true'
-                    }
-                });
-                await new Promise(r => setTimeout(r, 300));
-
-                await fetch('/api/mavlink/write_param', {
-                    method: 'POST',
-                    headers: {
-                        'content-type': 'application/json',
-                        'id': 'ARMING_CHECK',
-                        'value': '0',            // disable all pre-arm checks
-                        'type': '6'              // int32
-                    }
-                });
+                const state = get(mavStateStore);
+                const onGround = state === 'STANDBY' || state === 'Unknown';
+                if (onGround) {
+                    await sendCommand('DO_SET_MODE', [1, 4], true);
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                await writeParam('ARMING_CHECK', 0, 6);
                 await new Promise(r => setTimeout(r, 200));
             }
 
-            const response = await fetch('/api/mavlink/send_command', {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    'command': 'COMPONENT_ARM_DISARM',
-                    'params': `${param},21196`,
-                    'useCmdLong': 'true',
-                    'useArduPilotMega': 'false'
-                }
-            });
+            await sendCommand('COMPONENT_ARM_DISARM', [param, 21196], true);
 
-            if (response.ok) {
-                const result = await response.text();
-                console.log(`✅ ARM/DISARM command sent successfully:`, result);
-
-                // Restore ARMING_CHECK=1 (all checks on) shortly after arming
-                if (arming) {
-                    await new Promise(r => setTimeout(r, 1000));
-                    fetch('/api/mavlink/write_param', {
-                        method: 'POST',
-                        headers: {
-                            'content-type': 'application/json',
-                            'id': 'ARMING_CHECK',
-                            'value': '1',        // restore default checks
-                            'type': '6'
-                        }
-                    });
-                }
-            } else {
-                const error = await response.text();
-                console.error(`❌ ARM/DISARM command failed:`, error);
-                // Revert on error
-                mavPendingArmStore.set(null);
-                isPending = false;
-                if (pendingTimeout) clearTimeout(pendingTimeout);
+            if (arming) {
+                await new Promise(r => setTimeout(r, 1000));
+                writeParam('ARMING_CHECK', 1, 6);
             }
         } catch (error) {
-            // Network error — revert
-            console.error(`❌ Network error sending ARM/DISARM:`, error);
+            console.error(`❌ ARM/DISARM failed:`, error);
             mavPendingArmStore.set(null);
             isPending = false;
             if (pendingTimeout) clearTimeout(pendingTimeout);
         }
     }
 
-    // Clear isPending when COMMAND_ACK clears the pending store
     $: if ($mavPendingArmStore === null) isPending = false;
 </script>
 
 <div
     class="status-bar"
-    style="
-        --primaryColor: {primaryColor};
-        --secondaryColor: {secondaryColor};
-        --tertiaryColor: {tertiaryColor};
-        --fontColor: {fontColor};
-    "
+    style="--primaryColor: {primaryColor}; --secondaryColor: {secondaryColor}; --tertiaryColor: {tertiaryColor}; --fontColor: {fontColor};"
 >
-    <!-- Connection pill -->
+    <!-- Left: Connection pill -->
     <div class="pill {isOnline ? 'pill-green' : 'pill-gray'}">
         <i class="fas {isOnline ? 'fa-circle-check' : 'fa-circle-xmark'}"></i>
         <span>{isOnline ? 'Connected' : 'Disconnected'}</span>
@@ -157,16 +108,13 @@
     {#if isOnline}
         <div class="divider"></div>
 
-        <!-- Armed state + toggle button -->
+        <!-- Arm group -->
         <div class="armed-group">
-
-            <!-- Status pill -->
             <div class="pill {isArmed ? 'pill-red' : 'pill-gray'}">
                 <i class="fas {isArmed ? 'fa-lock-open' : 'fa-lock'}"></i>
                 <span>{isArmed ? 'ARMED' : 'DISARMED'}</span>
             </div>
 
-            <!-- Action button -->
             <button
                 class="arm-btn {isPending ? 'arm-btn-pending' : confirmStep ? 'arm-btn-confirm' : isArmed ? 'arm-btn-disarm' : 'arm-btn-arm'}"
                 on:click={toggleArmed}
@@ -183,6 +131,62 @@
                     <i class="fas fa-lock-open"></i> Arm
                 {/if}
             </button>
+        </div>
+
+        <!-- ── Stats telemetry pills (pushed to right) ── -->
+        <div class="stats-pills">
+            <div class="divider"></div>
+
+            <div class="stat-item" title="Vehicle Type">
+                <i class="fas fa-helicopter stat-icon"></i>
+                <span class="stat-label">Type:</span>
+                <span>{mavType}</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="stat-item" title="System State">
+                <i class="fas fa-circle stat-icon
+                    {sysState === 'ACTIVE' ? 'text-green-400'
+                    : sysState === 'CRITICAL' || sysState === 'EMERGENCY' ? 'text-red-400'
+                    : 'text-gray-400'}"></i>
+                <span class="stat-label">State:</span>
+                <span>{sysState}</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="stat-item" title="Flight Mode">
+                <i class="fas fa-location-arrow stat-icon text-orange-400"></i>
+                <span class="stat-label">Mode:</span>
+                <span class="text-orange-400 font-semibold">{mavMode}</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="stat-item" title="Speed">
+                <i class="fas fa-tachometer-alt stat-icon"></i>
+                <span class="stat-label">Spd:</span>
+                <span>{speed.toFixed(1)} m/s</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="stat-item" title="Altitude (relative)">
+                <i class="fas fa-arrows-up-down stat-icon"></i>
+                <span class="stat-label">Alt:</span>
+                <span>{altitude.toFixed(1)} m</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="stat-item" title="Battery">
+                <i class="fas fa-battery-half stat-icon" style="color: {batteryColor}"></i>
+                <span class="stat-label">Batt:</span>
+                <span style="color: {batteryColor}">
+                    {battery !== null ? battery + '%' : '--'}
+                </span>
+            </div>
         </div>
 
     {:else}
@@ -315,6 +319,38 @@
         to   { opacity: 1;   }
     }
 
+    /* ── Stats telemetry group ── */
+    .stats-pills {
+        display: flex;
+        align-items: center;
+        margin-left: auto; /* push to the right */
+        flex-shrink: 1;
+        overflow: hidden;
+    }
+
+    .stat-item {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 0.75rem;
+        white-space: nowrap;
+        color: var(--fontColor);
+        padding: 0 0.1rem;
+        flex-shrink: 0;
+    }
+
+    .stat-icon {
+        font-size: 0.65rem;
+        opacity: 0.6;
+    }
+
+    .stat-label {
+        font-size: 0.65rem;
+        opacity: 0.5;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+
     @media (max-width: 990px) {
         .status-bar {
             border-radius: 10px;
@@ -323,5 +359,6 @@
         }
         .pill { font-size: 0.72rem; padding: 0.2rem 0.55rem; }
         .arm-btn { font-size: 0.68rem; }
+        .stat-item { font-size: 0.68rem; }
     }
 </style>
