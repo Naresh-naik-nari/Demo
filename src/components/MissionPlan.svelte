@@ -204,24 +204,55 @@
             await sendMavlinkCommand('DO_SET_MODE', `${[1, 4]}`, true);
             await new Promise(resolve => setTimeout(resolve, 300));
 
-            // Step 3 — Disable ARMING_CHECK (no RC required when arming from GCS)
+            // Step 2b ? Disable RC failsafes so GCS-only flight works without RC transmitter
+            // FS_THR_ENABLE=0: disable RC throttle failsafe
+            // RC_OVERRIDE_TIME=-1: GCS override never expires
+            await writeParam('FS_THR_ENABLE', 0, 6);
+            await writeParam('RC_OVERRIDE_TIME', -1, 9);
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Step 3 -- Disable ARMING_CHECK and wait for FC to apply it
             await writeParam('ARMING_CHECK', 0, 6);
-            await new Promise(resolve => setTimeout(resolve, 200));
+            await new Promise(resolve => setTimeout(resolve, 1000));
 
-            // Step 4 — Arm
-            await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, true);
+            // Step 4 -- Arm with up to 3 retries (FC may reject first attempt)
+            let armed = false;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              await sendMavlinkCommand('COMPONENT_ARM_DISARM', `${[1, 21196]}`, true);
+              armed = await waitForArmed(3000);
+              if (armed) break;
+              console.warn(`[MissionPlan] Arm attempt ${attempt} failed, retrying...`);
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
 
-            // Step 5 — Wait for arm confirmation (up to 5 s) instead of a fixed delay
-            await waitForArmed(5000);
-
-            // Step 6 — Restore ARMING_CHECK
+            // Step 5 -- Restore ARMING_CHECK regardless of arm result
             await writeParam('ARMING_CHECK', 1, 6);
 
-            // Step 7 — Takeoff to 10 m
-            await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, 0, 0, 10]}`, true);
+            if (!armed) {
+              const n = new Notification({
+                target: document.body,
+                props: {
+                  title: 'Arming Failed',
+                  content: 'The vehicle did not arm after 3 attempts. Check pre-arm errors in the FC (compass, EKF, RC calibration).',
+                  type: 'error',
+                }
+              });
+              setTimeout(() => n.$destroy(), 10000);
+              return;
+            }
 
-            // Step 8 — Wait for the vehicle to reach takeoff altitude (up to 15 s)
-            await waitForAltitude(8, 15000);
+            // Step 6 -- Takeoff to 10 m using current GPS position
+            // NAV_TAKEOFF in GUIDED mode needs current lat/lon in param5/6 (?1e7),
+            // NOT zeros ? zeros cause Cube Orange to ignore the command.
+            const takeoffLoc = get(mavLocationStore);
+            const takeoffLat = Math.round(takeoffLoc.lat * 1e7);
+            const takeoffLon = Math.round(takeoffLoc.lng * 1e7);
+            // params: [pitch_deg, empty, empty, yaw_deg, lat?1e7, lon?1e7, alt_m]
+            await sendMavlinkCommand('NAV_TAKEOFF', `${[0, 0, 0, 0, takeoffLat, takeoffLon, 10]}`, false);
+            console.log(`[MissionPlan] NAV_TAKEOFF sent: lat=${takeoffLat} lon=${takeoffLon} alt=10m`);
+
+            // Step 7 -- Wait for the vehicle to reach takeoff altitude (up to 20 s)
+            await waitForAltitude(8, 20000);
           }
 
           // Step 9 — Switch to AUTO and begin mission

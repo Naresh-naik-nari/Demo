@@ -105,17 +105,23 @@
     }
 
     function duplicateTakeoffAndShift(actions: Record<string, any>): Record<string, any> {
+        // MAVLink mission format:
+        //   index 0 = home position (mirrors takeoff coords, current=1)
+        //   index 1 = NAV_TAKEOFF
+        //   index 2+ = remaining waypoints
+        const keys = Object.keys(actions).map(Number).sort((a, b) => a - b);
+        if (keys.length === 0) return actions;
+
         const newActions: Record<string, any> = {};
-        newActions['0'] = { ...actions['1'] };
-        newActions['1'] = { ...actions['1'] };
-        Object.keys(actions).forEach((key) => {
-            if (key !== '0' && key !== '1') {
-                newActions[(parseInt(key)).toString()] = { ...actions[key] };
-            }
+        // Index 0: home ? copy first action coords with NAV_WAYPOINT type
+        const firstAction = actions[keys[0]];
+        newActions['0'] = { ...firstAction, type: 'NAV_WAYPOINT', alt: firstAction.alt ?? 0 };
+        // Index 1+: all original actions in order
+        keys.forEach((key, i) => {
+            newActions[(i + 1).toString()] = { ...actions[key] };
         });
         return newActions;
     }
-
     async function importPlan() {
         const input = document.createElement("input");
         input.type = "file";

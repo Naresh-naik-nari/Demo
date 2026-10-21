@@ -749,12 +749,39 @@
       await sendMavlinkCommand('DO_SET_MODE', '1,4', true); // GUIDED for ground arming
       await new Promise(resolve => setTimeout(resolve, 300));
     }
-    // Disable pre-arm checks so missing RC won't block arming from GCS
+    // Disable pre-arm checks and wait for FC to apply the param
     await writeParam('ARMING_CHECK', 0, 6);
-    await new Promise(resolve => setTimeout(resolve, 200));
-    await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', true);
-    // Restore checks after arm
-    setTimeout(() => { writeParam('ARMING_CHECK', 1, 6); }, 1000);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Arm with up to 3 retries
+    let statsArmed = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await sendMavlinkCommand('COMPONENT_ARM_DISARM', '1,21196', true);
+      // Wait up to 3s for arm confirmation
+      const start = Date.now();
+      while (Date.now() - start < 3000) {
+        if (get(mavArmedStateStore)) { statsArmed = true; break; }
+        await new Promise(r => setTimeout(r, 200));
+      }
+      if (statsArmed) break;
+      console.warn(`[Stats] Arm attempt ${attempt} failed, retrying...`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Restore ARMING_CHECK regardless of result
+    await writeParam('ARMING_CHECK', 1, 6);
+
+    if (!statsArmed) {
+      const n = new Notification({
+        target: document.body,
+        props: {
+          title: 'Arming Failed',
+          content: 'Vehicle did not arm after 3 attempts. Check pre-arm errors on the FC.',
+          type: 'error',
+        }
+      });
+      setTimeout(() => n.$destroy(), 8000);
+    }
   }
 
   async function disarmVehicle() {

@@ -931,11 +931,11 @@ async function sendMavlinkCommand(command: string, params: number[], useCmdLong 
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     let msg: common.CommandInt | common.CommandLong;
     if (useCmdLong) msg = new common.CommandLong();
-    else { msg = new common.CommandInt(); msg.frame = 0; }
+    else { msg = new common.CommandInt(); msg.frame = 3; } // frame 3 = MAV_FRAME_GLOBAL_RELATIVE_ALT
     msg.targetSystem = 1; msg.targetComponent = 1;
     if (useArduPilotMega) msg.command = parseInt(`${ardupilotmega.MavCmd[command as keyof typeof ardupilotmega.MavCmd]}`);
     else msg.command = common.MavCmd[command as keyof typeof common.MavCmd];
-    params.forEach((v, i) => { if (v) (msg as any)[`_param${i + 1}`] = v; });
+    params.forEach((v, i) => { if (v !== undefined && v !== null) (msg as any)[`_param${i + 1}`] = v; });
     await _send(msg);
 }
 

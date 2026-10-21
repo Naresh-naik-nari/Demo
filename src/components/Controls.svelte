@@ -32,14 +32,14 @@
    * Source: https://ardupilot.org/copter/docs/flight-modes.html
    */
   const ALTITUDE_CAPABLE_MODES = new Set([
-    'GUIDED', 'LOITER', 'POSHOLD', 'ALT_HOLD', 'AUTO', 'CIRCLE',
+    'GUIDED', 'LOITER', 'AUTO', 'CIRCLE', 'RTL',
   ]);
 
   /**
    * Modes that accept CONDITION_YAW commands from GCS.
    */
   const YAW_CAPABLE_MODES = new Set([
-    'GUIDED', 'LOITER', 'POSHOLD', 'AUTO',
+    'GUIDED', 'LOITER', 'AUTO',
   ]);
 
   /** true when the current mode accepts GCS altitude commands */

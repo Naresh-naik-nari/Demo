@@ -301,10 +301,39 @@ export function buildMessageHandlers(ctx: ParserContext): Record<string, Message
         // ── Battery — also drives RTLL (see rtll.ts) ─────────────────────────
         BATTERY_STATUS: (text) => {
             const battery = extractValue(text, 'batteryRemaining');
-            if (!battery) return;
+            const level = battery !== '' ? parseInt(battery) : -1;
+            if (battery !== '') {
 
-            const level = parseInt(battery);
-            mavBatteryStore.set(level);
+                // Always try voltage-based calculation first ? it's more accurate.
+                // batteryRemaining from ArduPilot is often stuck at 99% when
+                // BATT_MONITOR is not configured or the battery estimator hasn't
+                // settled. Cell voltages from the voltages[] array are real hardware values.
+                const voltMatch = text.match(/"voltages"\s*:\s*\[([^\]]+)\]/);
+                let voltPct: number | null = null;
+                if (voltMatch) {
+                    const cells = voltMatch[1].split(',')
+                        .map((v: string) => parseInt(v.trim()))
+                        .filter((v: number) => v !== 65535 && v > 0);
+                    if (cells.length > 0) {
+                        const cellMv = cells.reduce((a: number, b: number) => a + b, 0) / cells.length;
+                        // LiPo: 4200mV = 100%, 3300mV = 0%
+                        voltPct = Math.round(Math.max(0, Math.min(100,
+                            ((cellMv - 3300) / (4200 - 3300)) * 100
+                        )));
+                    }
+                }
+
+                if (voltPct !== null) {
+                    // Use voltage-derived percentage ? always more reliable than
+                    // the FC's batteryRemaining when BATT_MONITOR is uncalibrated
+                    mavBatteryStore.set(voltPct);
+                } else if (level !== -1 && level !== 99) {
+                    // Only trust batteryRemaining if it's not -1 (not available)
+                    // and not stuck at 99 (uncalibrated default)
+                    mavBatteryStore.set(Math.max(0, Math.min(100, level)));
+                }
+                // else: keep current store value rather than overwrite with bad data
+            }
 
             // ── RTLL: Return-To-Launch-with-Loiter on low battery ─────────────
             // Loiter mode requires 3D GPS lock (HDOP < 1.4 to arm).
@@ -368,6 +397,24 @@ export function buildMessageHandlers(ctx: ParserContext): Record<string, Message
             if (!get(mavArmedStateStore)) {
                 rtllState.triggered = false;
             }
+        },
+
+
+        // ?? System status ? voltage fallback when BATTERY_STATUS gives -1 ???????
+        SYS_STATUS: (text) => {
+            if (get(mavBatteryStore) !== null && get(mavBatteryStore) !== 99) return; // skip if already have reliable %
+            const voltageRaw = extractValue(text, 'voltageBattery'); // mV
+            if (voltageRaw === '' || voltageRaw === '0') return;
+            const totalMv = parseInt(voltageRaw);
+            if (totalMv <= 0) return;
+            // Guess cell count from total voltage
+            const cells  = totalMv > 16800 ? 5 : totalMv > 12600 ? 4 : totalMv > 8400 ? 3 : 2;
+            const cellMv = totalMv / cells;
+            // LiPo: 4200mV = 100%, 3300mV = 0%
+            const pct = Math.round(Math.max(0, Math.min(100,
+                ((cellMv - 3300) / (4200 - 3300)) * 100
+            )));
+            mavBatteryStore.set(pct);
         },
 
         // ── Command acknowledgement ───────────────────────────────────────────
