@@ -3,6 +3,7 @@ import { connect, type Socket } from 'net';
 import { createSocket, type Socket as UDPSocket } from 'dgram';
 import * as mavlink from 'node-mavlink';
 import { REGISTRY } from '$lib/server/mavlink-registry';
+import { NotConnectedError } from '$lib/server/errors';
 
 // Destructure after import for better HMR compatibility
 const { MavLinkPacketSplitter, MavLinkPacketParser, MavLinkProtocolV2, common, minimal, ardupilotmega, send } = mavlink;
@@ -880,7 +881,7 @@ async function _send(message: any): Promise<void> {
     const p = getPort();
     if (!p || !getReader()) {
         S.online = false;
-        throw new Error('Not connected');
+        throw new NotConnectedError();
     }
     
     if (S.connectionType === 'udp' && S.udpRemoteHost && S.udpRemotePort) {
@@ -973,9 +974,19 @@ async function clearAllMissionItems() {
 async function setPositionLocal(x: number, y: number, z: number) {
     const p = getPort(); if (!p || !getReader()) { S.online = false; return; }
     const m = new common.SetPositionTargetLocalNed();
-    m.timeBootMs = 0; m.targetSystem = 1; m.targetComponent = 1;
-    m.coordinateFrame = 1; (m as any).typeMask = 0b011111111000;
-    m.x = x; m.y = y; m.z = z; m.yawRate = 0;
+    m.timeBootMs      = 0;
+    m.targetSystem    = 1;
+    m.targetComponent = 1;
+    // MAV_FRAME_BODY_OFFSET_NED (9): offset relative to current position in body frame.
+    // x=forward/back, y=right/left, z=down/up (negative=up).
+    // Frame 1 (LOCAL_NED) sends absolute coords from EKF origin ? wrong for DPad.
+    m.coordinateFrame = 9;
+    // typeMask 0x0FF8: use x,y,z position only ? ignore velocity, accel, yaw, yaw_rate
+    (m as any).typeMask = 0x0FF8;
+    m.x = x; m.y = y; m.z = z;
+    m.vx = 0; m.vy = 0; m.vz = 0;
+    m.afx = 0; m.afy = 0; m.afz = 0;
+    m.yaw = 0; m.yawRate = 0;
     await _send(m);
 }
 

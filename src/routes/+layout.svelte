@@ -151,13 +151,11 @@
       if (records.length > 0) {
         const loadedMission = records.find((m: { isLoaded: number }) => m.isLoaded === 1);
         if (loadedMission) {
+          // Restore UI state from DB -- do NOT auto-upload to FC on page load.
+          // Auto-uploading causes a 500 error when the page loads without FC connected.
+          // FC upload only happens when user explicitly clicks Save & Load Mission.
           missionPlanTitleStore.set(loadedMission.title);
           missionPlanActionsStore.set(JSON.parse(loadedMission.actions));
-          try {
-            await mavLoadMission(JSON.parse(loadedMission.actions));
-          } catch (err) {
-            console.error('[layout] load_mission failed:', err);
-          }
         }
       }
     } catch (error: unknown) {

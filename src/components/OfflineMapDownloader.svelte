@@ -89,6 +89,14 @@
       return;
     }
     
+
+    // Warn before large downloads (>5000 tiles ~ 122MB+)
+    if (totalTiles > 5000) {
+      const estimatedMB = Math.round((totalTiles * 25) / 1024);
+      const ok = window.confirm(`This will download ${totalTiles.toLocaleString()} tiles (~${estimatedMB} MB). Continue?`);
+      if (!ok) return;
+    }
+
     isDownloading = true;
     downloadedTiles = 0;
     downloadStatus = 'Downloading tiles...';
@@ -99,6 +107,7 @@
     
     try {
       for (let zoom = minZoom; zoom <= maxZoom; zoom++) {
+        if (!isDownloading) { downloadStatus = 'Download cancelled'; return; }
         const bounds = getTileBounds(lat, lng, radiusKm, zoom);
         
         for (let x = bounds.minX; x <= bounds.maxX; x++) {
@@ -115,7 +124,7 @@
               if (response.ok) {
                 // Tile is now cached on server
                 downloadedTiles++;
-                downloadProgress = (downloadedTiles / totalTiles) * 100;
+                downloadProgress = totalTiles > 0 ? (downloadedTiles / totalTiles) * 100 : 0;
                 downloadStatus = `Downloaded ${downloadedTiles} of ${totalTiles} tiles (${downloadProgress.toFixed(1)}%)`;
               }
             } catch (error) {
@@ -168,9 +177,13 @@
     }
   }
 
-  $: if (isOpen) {
+  let wasOpen = false;
+  $: if (isOpen && !wasOpen) {
+    wasOpen = true;
     calculateTotalTiles();
     loadCacheInfo();
+  } else if (!isOpen) {
+    wasOpen = false;
   }
 </script>
 
@@ -248,7 +261,7 @@
               min="1" 
               max="18" 
               bind:value={minZoom} 
-              on:input={calculateTotalTiles}
+              on:input={() => { if (minZoom > maxZoom) maxZoom = minZoom; calculateTotalTiles(); }}
               disabled={isDownloading}
               class="slider"
             />
@@ -260,7 +273,7 @@
               min="1" 
               max="18" 
               bind:value={maxZoom} 
-              on:input={calculateTotalTiles}
+              on:input={() => { if (maxZoom < minZoom) minZoom = maxZoom; calculateTotalTiles(); }}
               disabled={isDownloading}
               class="slider"
             />
